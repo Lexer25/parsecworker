@@ -1,4 +1,4 @@
-﻿using ParsecIntegrationClient;
+﻿using Newtonsoft.Json;
 using ParsecIntegrationClient.Models;
 using System;
 using System.Collections.Generic;
@@ -23,15 +23,13 @@ namespace ParsecIntegrationClient.Services
             { "6", "Удаление_организации" },
             { "7", "Добавление_группы_доступа_карте" },
             { "8", "Удаление_группы_доступа_у_карты" },
-            {"9", "Добавление_карточки" },
-            {"10", "Удаление_карточки" },
-            {"35", "Обновление_пользователя" },
-            {"55", "Обновление_организации" },
+            { "9", "Добавление_карточки" },
+            { "10", "Удаление_карточки" },
+            { "35", "Обновление_пользователя" },
+            { "55", "Обновление_организации" },
         };
 
-        /// <summary>
-        /// Возвращает название операции по её коду
-        /// </summary>
+        /// <summary>Возвращает название операции по её коду.</summary>
         public static string GetOperationName(string operationCode)
         {
             if (string.IsNullOrWhiteSpace(operationCode))
@@ -67,153 +65,76 @@ namespace ParsecIntegrationClient.Services
             public string ErrorMessage { get; set; }
         }
 
-        private static string GetOperationText(string operationCode)
+        /// <summary>Пишет state.json.</summary>
+        public static void SaveState(StateSnapshot snapshot, string stateFilePath = null)
         {
-            switch ((operationCode ?? string.Empty).Trim())
+            if (snapshot == null)
+                return;
+
+            stateFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
+
+            try
             {
-                case "1": return "Добавление_карточки";
-                case "2": return "Удаление_карточки";
-                case "3": return "Добавление_пользователя";
-                case "4": return "Удаление_пользователя";
-                case "5": return "Добавление_организации";
-                case "6": return "Удаление_организации";
-                case "7": return "Добавление_группы_доступа_карте";
-                case "8": return "Удаление_группы_доступа_у_карты";
-                default: return $"Unknown({operationCode})";
+                var dir = Path.GetDirectoryName(stateFilePath);
+                if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
             }
+            catch { /* ignore */ }
+
+            var json = JsonConvert.SerializeObject(snapshot, Formatting.Indented);
+            File.WriteAllText(stateFilePath, json);
         }
 
-        public static bool HasErrorState(string stateFilePath = null)
+        /// <summary>Читает state.json; null — если файла нет или он битый.</summary>
+        public static StateSnapshot TryRead(string stateFilePath = null)
         {
             stateFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
             try
             {
                 if (!File.Exists(stateFilePath))
-                    return false;
+                    return null;
 
-                var json = File.ReadAllText(stateFilePath);
-                // Проверяем без парсинга JSON, чтобы не зависеть от Json.NET.
-                return json != null && json.IndexOf("\"status\":\"ERR\"", StringComparison.OrdinalIgnoreCase) >= 0;
+                return JsonConvert.DeserializeObject<StateSnapshot>(File.ReadAllText(stateFilePath));
             }
             catch
             {
-                return false;
+                return null;
             }
         }
 
-        public static void WriteState(string idCardindev, string operation, string status, string desc, string error, string attempts = null, string stateFilePath = null)
+        public static bool HasErrorState(string stateFilePath = null)
         {
-            stateFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
-
-            try
-            {
-                var dir = Path.GetDirectoryName(stateFilePath);
-                if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-            }
-            catch { /* ignore */ }
-
-            var now = DateTime.Now;
-            var operationText = GetOperationText(operation);
-            var state = new State
-            {
-                IdCardindev = idCardindev ?? string.Empty,
-                OperationCode = operation ?? string.Empty,
-                Operation = operationText,
-                Status = status ?? string.Empty,
-                desc = string.IsNullOrWhiteSpace(desc) ? null : desc,
-                ErrorMessage = string.IsNullOrWhiteSpace(error) ? null : error,
-                Attempts = attempts,
-                Timestamp = now
-            };
-
-            File.WriteAllText(stateFilePath, state.ToString());
-        }
-        public static void SaveState(State state, string stateFilePath = null)
-        {
-            stateFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
-
-            try
-            {
-                var dir = Path.GetDirectoryName(stateFilePath);
-                if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-            }
-            catch { /* ignore */ }
-
-            //var now = DateTime.Now;
-            //var operationText = GetOperationText(operation);
-            //var state = new State
-            //{
-            //    IdCardindev = idCardindev ?? string.Empty,
-            //    OperationCode = operation ?? string.Empty,
-            //    Operation = operationText,
-            //    Status = status ?? string.Empty,
-            //    desc = string.IsNullOrWhiteSpace(desc) ? null : desc,
-            //    ErrorMessage = string.IsNullOrWhiteSpace(error) ? null : error,
-            //    Attempts = attempts,
-            //    Timestamp = now
-            //};
-
-            File.WriteAllText(stateFilePath, state.ToString());
+            var snapshot = TryRead(stateFilePath);
+            return snapshot != null && snapshot.Status == OperationStatus.Error;
         }
 
         // Обновляет state.json ОДНОЙ записью:
         // - если в "новых" строках лога есть Error/Exception -> пишем ERR + описание ошибки
         // - иначе -> пишем OK
-        public static StateUpdateResult UpdateStateFromLog(long prevLogPosition, string logFilePath, string idCardindev, string operation, string desc = null, string stateFilePath = null)
+        public static StateUpdateResult UpdateStateFromLog(long prevLogPosition, string logFilePath,
+            string idCardindev, string operation, string desc = null, string stateFilePath = null)
         {
             stateFilePath = string.IsNullOrWhiteSpace(stateFilePath) ? DefaultStateFilePath : stateFilePath;
 
-            // Убедимся, что директория существует.
-            try
-            {
-                var dir = Path.GetDirectoryName(stateFilePath);
-                if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-            }
-            catch
-            {
-                // если не смогли создать каталог — дальше попробуем записать, как есть
-            }
-
-            DateTime now = DateTime.Now;
             string errorMessage = null;
 
             // Проверяем ГЛОБАЛЬНЫЙ таймаут для ошибок
             var errorTimeout = DateTime.Now.AddMinutes(-SettingsService.ErrorTimeoutMinutes);
             bool hasRecentError = false;
 
-            // Читаем только то, что добавилось после prevLogPosition.
             try
             {
-                if (!File.Exists(stateFilePath))
-                    errorMessage = null;
-                else
+                var existing = TryRead(stateFilePath);
+                if (existing != null && existing.Status == OperationStatus.Error)
                 {
-                    var stateJson = File.ReadAllText(stateFilePath);
-                    if (!string.IsNullOrWhiteSpace(stateJson))
+                    hasRecentError = existing.Timestamp > errorTimeout;
+                    if (hasRecentError)
                     {
-                        // Проверяем время последней ошибки ГЛОБАЛЬНО
-                        if (stateJson.Contains("\"status\":\"ERR\""))
-                        {
-                            // Извлекаем timestamp из JSON для проверки таймаута
-                            var timestampMatch = System.Text.RegularExpressions.Regex.Match(stateJson, "\"timestamp\":\"([^\"]+)\"");
-                            if (timestampMatch.Success && DateTime.TryParse(timestampMatch.Groups[1].Value, out DateTime lastErrorTime))
-                            {
-                                hasRecentError = lastErrorTime > errorTimeout;
-                                if (hasRecentError)
-                                {
-                                    Logger.Log<StateService>("Warning", $"Global error timeout active until {lastErrorTime.AddMinutes(SettingsService.ErrorTimeoutMinutes)}");
-                                }
-                            }
-                        }
+                        Logger.Log<StateService>("Warning", $"Global error timeout active until {existing.Timestamp.AddMinutes(SettingsService.ErrorTimeoutMinutes)}");
                     }
                 }
 
-                if (!File.Exists(logFilePath))
-                    errorMessage = null;
-                else
+                if (File.Exists(logFilePath))
                 {
                     using (var fs = new FileStream(logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                     {
@@ -253,7 +174,6 @@ namespace ParsecIntegrationClient.Services
                 errorMessage = null;
             }
 
-            // Если есть последняя ошибка ГЛОБАЛЬНО и не истек таймаут - не меняем статус
             if (hasRecentError)
             {
                 return new StateUpdateResult
@@ -267,16 +187,6 @@ namespace ParsecIntegrationClient.Services
             if (status == "ERR" && string.IsNullOrWhiteSpace(desc))
                 desc = errorMessage;
 
-            // Не перезаписываем state.json - он уже записан в ParsecService
-            //WriteState(
-            //    idCardindev: idCardindev,
-            //    operation: operation,
-            //    status: status,
-            //    desc: desc,
-            //    error: (status == "ERR" ? (errorMessage ?? string.Empty) : null),
-            //    attempts: null,
-            //    stateFilePath: stateFilePath);
-
             return new StateUpdateResult
             {
                 Status = status,
@@ -285,4 +195,3 @@ namespace ParsecIntegrationClient.Services
         }
     }
 }
-
