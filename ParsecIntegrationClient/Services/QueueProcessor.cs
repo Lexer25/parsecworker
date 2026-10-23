@@ -18,25 +18,6 @@ namespace ParsecIntegrationClient.Services
 
             var state = new State();
 
-            // Проверка лицензии перед началом обработки
-            License.SetLicenseStatus(true);
-            if (!License.CanPerformOperation())
-            {
-                Logger.Log<QueueProcessor>("Error", "27 ЛИЦЕНЗИЯ ОТСУТСТВУЕТ: Программа заблокирована. Обработка задач прекращена.");
-
-                state.Status = "ERR";
-                state.desc = "ЛИЦЕНЗИЯ ОТСУТСТВУЕТ: Превышен лимит бесплатных транзакций";
-                state.ErrorMessage = "Лимит бесплатных транзакций (10) исчерпан";
-                state.Timestamp = DateTime.Now;
-                state.NextStart = DateTime.Now.AddMinutes(SettingsService.ErrorTimeoutMinutes);
-                state.keyNum = Key.keyNumber;
-
-                StateService.SaveState(state);
-
-                Logger.Log<QueueProcessor>("Warning", string.Format("Ожидание {0} минут перед следующей попыткой проверки лицензии", SettingsService.ErrorTimeoutMinutes));
-                return;
-            }
-
             var rows = DatabaseService.GetList<DbModelRowIDInDev>(SettingsService.QuerySelectIdDevCardString).OrderBy(x => Convert.ToInt32(x.ID)).ToArray();
 
             if (rows == null || rows.Length == 0)
@@ -63,35 +44,9 @@ namespace ParsecIntegrationClient.Services
             int i = 1;
             foreach (var row in rows)
             {
-                // Проверка лицензии перед каждой транзакцией
-                if (!License.CanPerformOperation())
-                {
-                    Logger.Log<QueueProcessor>("Error", string.Format("105 ЛИЦЕНЗИЯ ОТСУТСТВУЕТ: Превышен лимит. Обработка задачи {0} прекращена.", row.ID));
-
-                    var errorState = new State
-                    {
-                        IdCardindev = row.ID,
-                        Status = "ERR",
-                        desc = "ЛИЦЕНЗИЯ ОТСУТСТВУЕТ: Превышен лимит бесплатных транзакций",
-                        ErrorMessage = "Лимит бесплатных транзакций исчерпан",
-                        Timestamp = DateTime.Now,
-                        Operation = StateService.GetOperationName(row.OPERATION),
-                        OperationCode = row.OPERATION,
-                        Attempts = row.ATTEMPS,
-                        NextStart = DateTime.Now.AddMinutes(SettingsService.ErrorTimeoutMinutes),
-                        keyNum = Key.keyNumber
-                    };
-                    StateService.SaveState(errorState);
-
-                    // Удаляем задачу, чтобы не зацикливаться
-                    DatabaseService.DeleteIdInDevById(row.ID);
-                    Logger.Log<QueueProcessor>("Warning", string.Format("Задача {0} удалена из-за отсутствия лицензии", row.ID));
-                    continue; // Продолжаем со следующей задачей
-                }
-
                 Logger.Log<QueueProcessor>("Info", string.Format(
-                    "129 ЗАДАЧА {0}, {1}/{2} Начало обработки cardindev {3}. Осталось транзакций: {4}",
-                    row.OPERATION, i, rows.Length, row.ID, License.RemainingTransactions));
+                    "129 ЗАДАЧА {0}, {1}/{2} Начало обработки cardindev {3}",
+                    row.OPERATION, i, rows.Length, row.ID));
 
                 // Предварительные проверки до выполнения операции.
                 int operationPrecheck;
@@ -291,4 +246,3 @@ namespace ParsecIntegrationClient.Services
         }
     }
 }
-
