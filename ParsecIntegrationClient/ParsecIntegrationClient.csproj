@@ -1,16 +1,20 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Worker">
+<Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <!--
     Схема как в basip_exe: Microsoft.NET.Sdk.Worker + Microsoft.Extensions.Hosting.
     Один и тот же exe запускается и в консоли, и как служба Windows (UseWindowsService).
-    Quartz, Fody/Costura, Service1 и ProjectInstaller не используются.
 
-    Target framework — .NET Framework 4.7.2, потому что SOAP-прокси Парсека
-    (Web References\IntegrationWebService\Reference.cs) сгенерирован под System.Web.Services,
-    которого в .NET 8 нет. Переход на net8.0-windows — отдельная задача с перегенерацией прокси.
+    Целевая платформа — .NET 8 (net8.0-windows). SOAP-клиент Парсека перегенерирован
+    из WSDL в IntegrationWebService\IntegrationService.cs средствами dotnet-svcutil
+    (System.ServiceModel / BasicHttpBinding) — System.Web.Services, на котором был
+    прежний Web Reference, в .NET 8 отсутствует.
+
+    Поставка — штатный single-file publish .NET 8 (PublishSingleFile), без Costura/Fody
+    и без самодельного встраивания DLL в ресурсы exe (EmbeddedAssemblies.cs удалён):
+    приложение self-contained, поэтому на стенде не нужно отдельно ставить .NET 8.
   -->
   <PropertyGroup>
-    <TargetFramework>net472</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>Exe</OutputType>
     <RootNamespace>ParsecIntegrationClient</RootNamespace>
     <AssemblyName>ParsecIntegrationClient</AssemblyName>
@@ -19,17 +23,26 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
 
-    <!-- Явно: проект публикуется в папку (dotnet publish). ClickOnce в SDK-проектах не поддерживается,
-         поэтому в меню Visual Studio пункта "Публиковать..." для net472 нет - публикация идёт
-         через build.cmd или install-service.ps1. -->
+    <!-- Явно: проект публикуется в папку (dotnet publish). -->
     <IsPublishable>true</IsPublishable>
 
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+    <!--
+      Один exe без установленного .NET 8 на стенде. Если на целевых машинах
+      .NET 8 уже развёрнут, можно собрать компактную framework-dependent поставку:
+      dotnet publish -p:SelfContained=false -r win-x64 (потребуется runtime 8.0.x).
+    -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
 
-    <Version>2.0.1</Version>
-    <AssemblyVersion>2.0.1</AssemblyVersion>
-    <FileVersion>2.0.1</FileVersion>
+    <!-- Trimming не включаем: XmlSerializer (SOAP), Firebird и конфигурация используют
+         рефлексию, IL-обрезка для них небезопасна. -->
+
+    <Version>3.0.1</Version>
+    <AssemblyVersion>3.0.1</AssemblyVersion>
+    <FileVersion>3.0.1</FileVersion>
 
     <Product>ParsecIntegrationClient</Product>
     <AssemblyTitle>ParsecIntegrationClient</AssemblyTitle>
@@ -48,52 +61,12 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.2" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.2" />
 
+    <!-- SOAP-клиент Парсека: WCF-клиент для .NET 8 (прежний прокси был на System.Web.Services). -->
+    <PackageReference Include="System.ServiceModel.Http" Version="8.0.0" />
+
     <!-- Json.NET остаётся: на нём построены Models\State.cs и разбор прежнего appsettings.json. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
-
-  <ItemGroup>
-    <!-- Ссылки .NET Framework, нужные сгенерированному SOAP-прокси Парсека
-         (ApplicationSettingsBase — System.Configuration, SoapHttpClientProtocol — System.Web.Services). -->
-    <Reference Include="System.Configuration" />
-    <Reference Include="System.Web" />
-    <Reference Include="System.Web.Services" />
-  </ItemGroup>
-
-  <!--
-    Поставка из одного файла. На .NET Framework нет PublishSingleFile, поэтому зависимости
-    (Microsoft.Extensions.*, FirebirdSql, Newtonsoft и т.д.) встраиваются в exe ресурсами,
-    а EmbeddedAssemblies.cs отдаёт их среде по требованию.
-  -->
-  <PropertyGroup>
-    <EmbedAssembliesIntoExe>true</EmbedAssembliesIntoExe>
-  </PropertyGroup>
-
-  <Target Name="EmbedReferencedAssemblies" AfterTargets="ResolveReferences" Condition="'$(EmbedAssembliesIntoExe)' == 'true'">
-    <ItemGroup>
-      <_AssemblyToEmbed Include="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.dll'" />
-      <!-- Сателлиты локализации встраивать нельзя: у них своя культура и имя ресурса. -->
-      <_AssemblyToEmbed Remove="@(_AssemblyToEmbed)" Condition="$([System.String]::Copy('%(Filename)').EndsWith('.resources'))" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <EmbeddedResource Include="@(_AssemblyToEmbed)">
-        <LogicalName>%(Filename)%(Extension)</LogicalName>
-      </EmbeddedResource>
-    </ItemGroup>
-
-    <Message Importance="high" Text="Встроено в exe сборок: @(_AssemblyToEmbed-&gt;Count())" />
-  </Target>
-
-  <!-- После публикации DLL не нужны: они уже внутри exe. Остаются exe, конфигурация и скрипты. -->
-  <Target Name="TrimPublishToSingleExe" AfterTargets="Publish" Condition="'$(EmbedAssembliesIntoExe)' == 'true'">
-    <ItemGroup>
-      <_PublishRedundantDll Include="$([MSBuild]::EnsureTrailingSlash($(PublishDir)))**\*.dll" />
-      <_PublishRedundantDll Include="$([MSBuild]::EnsureTrailingSlash($(PublishDir)))**\*.deps.json" />
-    </ItemGroup>
-
-    <Delete Files="@(_PublishRedundantDll)" />
-  </Target>
 
   <ItemGroup>
     <!-- Единственный файл настроек, кладётся рядом с exe. -->
@@ -105,6 +78,3 @@
   </ItemGroup>
 
 </Project>
-
-
-

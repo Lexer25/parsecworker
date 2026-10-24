@@ -51,7 +51,8 @@ namespace ParsecIntegrationClient
 
                 try
                 {
-                    int result = ParsecClient.Create().ContinueSession(session);
+                    using var client = ParsecClient.Create();
+                    int result = client.ContinueSession(session);
 
                     if (result == ClientState.Result_Success)
                     {

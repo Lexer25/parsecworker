@@ -1,45 +1,59 @@
 ﻿# ParsecIntegrationClient
 
 Модуль интеграции СКУД Артонит (Firebird/ShieldPro) с СКУД Парсек по SOAP-сервису
-`IntegrationService`. Схема приложения — как в `basip_exe`: обычный Worker на
-`Microsoft.Extensions.Hosting`, один exe работает и из консоли, и как служба Windows.
+`IntegrationService`. Приложение — Worker на `Microsoft.Extensions.Hosting`: один exe
+работает и из консоли, и как служба Windows.
 
-## Что изменилось по сравнению с прежней версией
+Текущая версия — **3.0.0** на **.NET 8** (`net8.0-windows`, win-x64).
 
-| Было | Стало |
+## Что изменилось в 3.0.0
+
+| Было (2.0.1) | Стало (3.0.0) |
 |---|---|
-| `Service1 : ServiceBase` + `ProjectInstaller` + `installutil` | `UseWindowsService()`, установка скриптом `install-service.ps1` |
-| Ручное ветвление `Main`: `/console`, `Environment.UserInteractive`, `ServiceBase.Run` | Режим определяется автоматически, ключи не нужны |
-| Планировщик Quartz 3.6 (2 задания + триггеры) | Два `BackgroundService`: `Worker` и `SessionKeepAliveWorker` |
-| Fody/Costura: сборка DLL внутрь exe, папка `packages` | Один exe тем же способом (ресурсы + `AssemblyResolve`), но без Fody и без `packages` |
-| Свои `SettingsService`/`Logger` на статике и Json.NET | Конфигурация .NET + `ILogger`; фасады `SettingsService`/`Logger` сохранены для существующего кода |
-| Guardant SDK7, проверка ключа (была закомментирована) | Убрано, лицензирование отключено |
-| Путь `C:\IntegrationClient` зашит в `Service1.MainPath` | `Paths:MainPath` в `appsettings.json` |
+| `net472` (.NET Framework 4.7.2) | `net8.0-windows`, self-contained |
+| SOAP-прокси `Web References/.../Reference.cs` на `System.Web.Services` | WCF-клиент `System.ServiceModel` (BasicHttpBinding), сгенерирован `dotnet-svcutil` из того же WSDL |
+| Fody/Costura, затем самодельное встраивание DLL в ресурсы exe (`EmbeddedAssemblies.cs`) | Штатный `PublishSingleFile` .NET 8, без сторонних библиотек и без `AssemblyResolve` |
+| Сборка одного exe вручную + `--verify-embedded` | Один exe даёт `dotnet publish`; проверка запуска — `ParsecIntegrationClient.exe --version` |
+| Пакеты `Microsoft.Extensions.*` 9.0.2 | Без изменений (работают на .NET 8) |
+
+Логика интеграции (очередь `cardindev`, операции с людьми, организациями, картами и
+группами доступа), формат журнала, `state.json`, имена службы и настроек сохранены.
 
 ## Структура
 
 ```
-ParsecIntegrationClient.csproj   Microsoft.NET.Sdk.Worker, net472
-Program.cs                       сборка хоста, конфигурация, журналирование, старт/стоп в журнале
+ParsecIntegrationClient.csproj   Microsoft.NET.Sdk.Worker, net8.0-windows
+Program.cs                       сборка хоста, конфигурация, журналирование, старт/стоп
 Worker.cs                        основной цикл: авторизация в Парсеке + обработка очереди
 SessionKeepAliveWorker.cs        продление сессии Парсека
 Options/WorkerOptions.cs         секции appsettings.json (Paths/Log/Parsec/Service)
-EmbeddedAssemblies.cs            загрузчик сборок, встроенных в exe (поставка из одного файла)
+IntegrationWebService/
+    IntegrationService.wsdl      исходный WSDL Парсека (для перегенерации)
+    IntegrationService.cs        сгенерированный WCF-клиент и модели (не править вручную)
 Services/Paths.cs                рабочие каталоги службы
+Services/ParsecClient.cs         фабрика SOAP-клиента: адрес, таймаут, binding
 Services/Logger.cs               фасад Logger.Log<T> поверх ILogger
 Services/Logging/                файловый журнал в прежнем формате
 Services/QueueProcessor.cs       обработка очереди cardindev (бывший MainJob)
-Services/ParsecService.cs        операции с Парсеком (без изменений)
-Services/DatabaseService.cs      работа с БД Артонит (без изменений)
-Services/StateService.cs         state.json (без изменений)
+Services/ParsecService.cs        операции с Парсеком
+Services/DatabaseService.cs      работа с БД Артонит
+Services/StateService.cs         state.json
 Services/SettingsService.cs      настройки + совместимость со старым appsettings.json
-Models/, Web References/         модели и SOAP-прокси Парсека (без изменений)
-Properties/PublishProfiles/      профиль публикации в папку (dotnet publish -p:PublishProfile)
+Models/                          модели БД, состояния и результатов операций
+Properties/PublishProfiles/      профиль публикации в папку
+tools/regenerate-parsec-client.ps1   перегенерация SOAP-клиента из WSDL
 ```
 
-В корне репозитория: `build.cmd` (сборка + публикация + установщик) и `ParsecSetup.iss` (Inno Setup).
+В корне репозитория: `build.cmd` (сборка + публикация + установщик) и `ParsecSetup.iss`.
 
-## Запуск
+## Требования
+
+- **Сборка:** .NET SDK 8.0 или новее (проверено на SDK 10.0.401), Windows.
+  Первый `restore` и первый запуск скрипта перегенерации требуют доступа к nuget.org.
+- **Стенд:** Windows x64. Отдельно ставить .NET 8 не нужно: поставка self-contained.
+  Нужны только права на запись в `Paths:MainPath` для учётной записи службы.
+
+## Сборка и запуск
 
 Из корня репозитория (`C:\ParsecIntegrationClinet_worker`):
 
@@ -47,41 +61,17 @@ Properties/PublishProfiles/      профиль публикации в папк
 dotnet build .\ParsecIntegrationClient\ParsecIntegrationClient.csproj
 
 # консоль: то же самое exe, никаких ключей не нужно
-.\ParsecIntegrationClient\bin\Debug\net472\ParsecIntegrationClient.exe
+.\ParsecIntegrationClient\bin\Debug\net8.0-windows\win-x64\ParsecIntegrationClient.exe
 ```
 
 Остановка в консоли — `Ctrl+C`: приложение закрывает сессию Парсека и завершается штатно.
-
-## Установка как служба
+Проверка, что exe запускается (Парсек и база не нужны):
 
 ```powershell
-dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Release -o .\publish
-cd .\publish
-.\install-service.ps1
-.\uninstall-service.ps1   # полное удаление
+.\ParsecIntegrationClient.exe --version      # печатает 3.0.0.0
 ```
 
-Имя службы сохранено прежним — `ParsecIntegrationService`, поэтому обновление на стенде
-выполняется поверх старой версии: остановить службу, заменить файлы содержимым `publish`,
-запустить `install-service.ps1` (он обновит путь к exe и запустит службу).
-
-Скрипт создаёт службу с `start= auto`, описанием и перезапуском при падении
-(3 попытки с интервалом 60 с). Учётная запись по умолчанию — `NT AUTHORITY\LocalService`,
-как в прежнем `ProjectInstaller`; другую можно указать параметрами `-Account` и `-Password`
-(для доменной учётной записи). Этой учётной записи нужны права на запись в `Paths:MainPath`.
-
-В папку `publish` попадают exe, все зависимости, `appsettings.json`, README и оба скрипта —
-её можно целиком копировать на стенд.
-
 ## Публикация и установщик
-
-В Visual Studio пункта «Публиковать…» у этого проекта нет — и это ожидаемо. В прежней версии
-это был ClickOnce-мастер (в csproj `PublishUrl`, `Install`, `ApplicationVersion`, ключ `.pfx`;
-на выходе `setup.exe` + `Application Files`), а ClickOnce к проектам на новом SDK-формате
-не применяется. Для net472 Visual Studio не показывает и «папочную» публикацию, хотя
-MSBuild-публикация работает полностью.
-
-Публикация выполняется так:
 
 ```powershell
 # 1) всё сразу: restore -> build -> publish -> установщик
@@ -96,45 +86,82 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
 
 `build.cmd` создаёт:
 
-- `publish\` — один exe со всеми зависимостями внутри, `appsettings.json`, скрипты, README;
-- `Output\ParsecIntegrationSetup_v1.0.5.45.exe` — установщик (Inno Setup 6, `ParsecSetup.iss`).
+- `publish\` — `ParsecIntegrationClient.exe` (≈38 МБ, все зависимости внутри),
+  `appsettings.json`, `install-service.ps1`, `uninstall-service.ps1`, `README.md`, `*.pdb`;
+- `Output\ParsecIntegrationSetup_v3.0.0.0.exe` — установщик (Inno Setup 6, `ParsecSetup.iss`).
 
 ### Поставка из одного файла
 
-На .NET Framework нет `PublishSingleFile` — это механизм .NET Core. Поэтому зависимости
-встраиваются в exe как ресурсы, как раньше делал Costura, но без Fody и сторонних библиотек:
+В csproj включены `PublishSingleFile`, `SelfContained`, `IncludeNativeLibrariesForSelfExtract`
+и `EnableCompressionInSingleFile`. Никакого Costura/Fody и никакого собственного загрузчика
+сборок нет: всё делает SDK .NET 8. Отдельных DLL рядом с exe не остаётся.
 
-- MSBuild-target `EmbedReferencedAssemblies` (в csproj) складывает в ресурсы все DLL из
-  `ReferenceCopyLocalPaths`, а `TrimPublishToSingleExe` убирает их из папки публикации;
-- `EmbeddedAssemblies.cs` подписывается на `AppDomain.AssemblyResolve` и отдаёт сборки
-  из памяти; вызов стоит первой строкой `Main`, до обращения к типам `Microsoft.Extensions.*`
-  (иначе JIT ищет их файлами рядом с exe).
-
-Внутри exe (≈4,9 МБ) лежат все 41 зависимость: `FirebirdSql.Data.FirebirdClient`,
-`Newtonsoft.Json`, `Microsoft.Extensions.*`, `System.Text.Json` и остальные. Рядом
-достаточно положить `appsettings.json`; `exe.config`, `.pdb` и скрипты — необязательные
-служебные файлы, без них exe тоже запускается.
-
-Проверка целостности поставки на стенде (Парсек и база не нужны):
+`RuntimeIdentifier` зафиксирован как `win-x64`. Если на стендах уже установлен .NET 8,
+можно собрать компактную framework-dependent поставку (единицы МБ вместо десятков):
 
 ```powershell
-.\ParsecIntegrationClient.exe --verify-embedded
+dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Release -o .\publish `
+  -p:SelfContained=false -p:PublishSingleFile=true
 ```
 
-Команда печатает список встроенных сборок, грузит каждую и перечисляет типы.
-Код возврата: `0` — всё загрузилось, `1` — есть проблемы.
+Trimming намеренно не включён: `XmlSerializer` (SOAP), Firebird и конфигурация используют
+рефлексию, IL-обрезка для них небезопасна.
 
-Версия установщика берётся из файла `publish\ParsecIntegrationClient.exe`, то есть из `<Version>`
-в csproj — править её в двух местах не нужно.
+## SOAP-клиент Парсека
 
-Установщик ставит файлы в `C:\Program Files\ParsecIntegrationService`, регистрирует службу
-`ParsecIntegrationService` от `NT AUTHORITY\LocalService`, настраивает перезапуск при падении
-и запускает её. При обновлении поверх существующей версии служба останавливается, файлы
-заменяются, а `appsettings.json` **не перезаписывается**. При удалении служба снимается,
-настройки и данные (`C:\IntegrationClient`) остаются на месте.
+`IntegrationWebService\IntegrationService.cs` — WCF-клиент (`System.ServiceModel.Http` 8.0.0),
+сгенерированный из `IntegrationService.wsdl` командой:
 
-Пункт «Публиковать…» в Visual Studio (в том числе публикация одним файлом) возможен только
-после перехода на .NET 8 — см. раздел ниже.
+```
+dotnet-svcutil IntegrationService.wsdl
+    --outputDir ParsecIntegrationClient\IntegrationWebService
+    --outputFile IntegrationService.cs
+    --namespace *,ParsecIntegrationClient.IntegrationWebService
+    --serializer XmlSerializer
+    --syncOnly
+```
+
+- `XmlSerializer` обязателен: WSDL Парсека — document/literal, как у ASMX;
+- `--syncOnly` сохраняет синхронные методы, потому что `ParsecService` вызывает операции
+  синхронно (асинхронные обёртки не нужны);
+- все типы остаются в прежнем пространстве имён `ParsecIntegrationClient.IntegrationWebService`,
+  поэтому модели и код операций не переписывались;
+- используется SOAP 1.1 (`BasicHttpBinding`), как и прежний `SoapHttpClientProtocol`.
+
+Перегенерация (например, после обновления Парсека) — скриптом:
+
+```powershell
+.\tools\regenerate-parsec-client.ps1
+```
+
+Скрипт сам ставит `dotnet-svcutil` 8.0.0 в локальный `.tools` (каталог в `.gitignore`),
+генерирует файл во временный каталог и заменяет `IntegrationService.cs` только после
+успешной генерации. Адрес сервиса в сгенерированном коде — лишь значение из WSDL; в работе
+используется `Parsec:Url` из `appsettings.json` (см. `Services/ParsecClient.cs`).
+
+## Установка как служба
+
+```powershell
+dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Release -o .\publish
+cd .\publish
+.\install-service.ps1
+.\uninstall-service.ps1   # полное удаление
+```
+
+Имя службы прежнее — `ParsecIntegrationService`, поэтому обновление на стенде выполняется
+поверх старой версии: остановить службу, заменить файлы содержимым `publish`, запустить
+`install-service.ps1` (он обновит путь к exe и запустит службу).
+
+Скрипт создаёт службу с `start= auto`, описанием и перезапуском при падении (3 попытки
+с интервалом 60 с). Учётная запись по умолчанию — `NT AUTHORITY\LocalService`; другую можно
+указать параметрами `-Account` и `-Password`. Этой учётной записи нужны права на запись
+в `Paths:MainPath`.
+
+Установщик Inno Setup ставит файлы в `C:\Program Files\ParsecIntegrationService`,
+регистрирует службу, настраивает перезапуск и запускает её. При обновлении поверх
+существующей версии служба останавливается, файлы заменяются, а `appsettings.json`
+**не перезаписывается**. При удалении служба снимается, настройки и данные
+(`C:\IntegrationClient`) остаются.
 
 ## Настройки
 
@@ -144,15 +171,22 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
 |---|---|---|
 | `Paths:MainPath` | рабочий каталог (журнал, state.json) | `C:\IntegrationClient` |
 | `Log:Level` | уровень журнала приложения | `_logLevel` = `Warning` |
+| `Log:FrameworkLevel` | уровень категорий `Microsoft.*`/`System.*` | — |
 | `Log:FolderPath` | каталог журнала, пусто = `<MainPath>\log` | — |
+| `Log:RetainedFileCount` | сколько файлов журнала хранить | 31 |
 | `Parsec:Url` | адрес SOAP-сервиса | был зашит в прокси |
 | `Parsec:Domain/User/Password` | учётная запись интеграции | были зашиты в коде |
+| `Parsec:TimeoutSeconds` | таймаут SOAP-запроса (Open/Send/Receive/Close) | `Timeout` прокси, 100 с |
 | `Parsec:SessionContinueSeconds` | период продления сессии | 240 с (Quartz) |
+| `Parsec:SessionRetrySeconds` | пауза между попытками авторизации | — |
 | `Service:DatabaseConnectionString` | строка подключения к Артонит (**обязательна**) | `_databaseConnectionString` |
 | `Service:DatabaseRetrySeconds` | пауза между проверками БД, секунды | — |
 | `Service:JobIntervalSeconds` | интервал обработки очереди | 600 с (Quartz) |
 | `Service:ErrorTimeoutMinutes` | пауза после ошибки | `_errorTimeoutMinutes` |
 | `Service:SkipErrCode` | коды ошибок, удаляющие задание | `_skipErrCode` |
+
+Строка подключения к Firebird обычно содержит `Charset=win1251`; провайдер кодовых страниц
+в .NET 8 регистрируется в `Program.Main`.
 
 ### Проверка базы данных
 
@@ -162,18 +196,18 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
   «Нет подключения к базе данных Артонит: <причина>. Строка подключения: <источник>»,
   очередь не обрабатывается, повтор через `Service:DatabaseRetrySeconds`;
 - строка подключения пуста и в прежнем файле её нет → тот же `Critical` с причиной
-  «строка подключения не задана», встроенного значения в коде больше нет.
+  «строка подключения не задана».
 
-Встроенной строки подключения (как раньше `User=SYSDBA;...ShieldPro_rest.gdb`) больше нет:
-пустая настройка теперь означает явную ошибку в журнале, а не молчаливую подстановку чужого пути.
+Встроенной строки подключения в коде больше нет: пустая настройка — явная ошибка в журнале,
+а не молчаливая подстановка чужого пути.
 
 ### Совместимость со старой установкой
 
 Если рядом со службой остался прежний файл `C:\IntegrationClient\appsettings.json`
 с ключами `_databaseConnectionString`, `_databaseJobTimeout`, `_errorTimeoutMinutes`,
-`_skipErrCode`, `_logLevel`, его значения **имеют приоритет** — служба после обновления
-ведёт себя как раньше. В журнал при старте пишется предупреждение с перечнем
-использованных ключей. Порядок миграции:
+`_skipErrCode`, `_logLevel`, его значения **имеют приоритет** — после обновления служба
+ведёт себя как раньше. В журнал при старте пишется предупреждение с перечнем использованных
+ключей. Порядок миграции:
 
 1. перенести значения из старого файла в `appsettings.json` рядом с exe (секции `Service`/`Log`);
 2. удалить `C:\IntegrationClient\appsettings.json`;
@@ -189,32 +223,15 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
 21.6.2026 14:30:0 LOG: Warning-QueueProcessor Message: 21 ЗАПУСК ОБРАБОТКИ ЗАДАЧ
 ```
 
-Отличие одно: уровень `Exception` теперь пишется как `Error` (в `ILogger` такого уровня нет),
-плюс в конце строки выводится стек исключения.
+Уровень `Exception` пишется как `Error` (в `ILogger` такого уровня нет), в конце строки
+выводится стек исключения. Пароль из строки подключения в журнал не попадает — маскируется.
 
-Пароль из строки подключения в журнал не попадает — маскируется.
-
-При успешном подключении к Парсеку в журнал пишутся две строки уровня `Warning`
-(видны при уровне по умолчанию):
+При успешном подключении к Парсеку в журнал пишутся две строки уровня `Warning`:
 
 ```
-... LOG: Warning-Worker Message: Подключение к SOAP Парсека установлено: http://.../IntegrationService.asmx; протокол SOAP: SOAP 1.1 (по умолчанию); сессия: 1111...
+... LOG: Warning-Worker Message: Подключение к SOAP Парсека установлено: http://.../IntegrationService.asmx; протокол SOAP: SOAP 1.1; сессия: 1111...
 ... LOG: Warning-Worker Message: Версия SOAP-сервиса Парсека: 3.1.2.777
 ```
 
-Версия берётся методом `GetVersion` сервиса интеграции; если он не ответил, пишется
-предупреждение с причиной, но работа продолжается.
-
-## Переход на .NET 8
-
-Отдельная задача: SOAP-прокси Парсека (`Web References/.../Reference.cs`, 555 КБ) собран
-под `System.Web.Services`, которого в .NET 8 нет. Понадобится перегенерация клиента
-(`dotnet-svcutil` → `System.ServiceModel.Http`) и проверка на стенде Парсека. Всё остальное
-(хостинг, конфигурация, журналирование, обработка очереди) к платформе не привязано.
-
-
-
-
-
-
-
+Версия берётся методом `GetVersion`; если он не ответил, пишется предупреждение с причиной,
+но работа продолжается.

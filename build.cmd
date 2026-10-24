@@ -1,5 +1,6 @@
 @echo off
-rem Build -> publish -> installer. Run from the repository root or by double click.
+rem Build -> publish -> installer (.NET 8, self-contained single-file).
+rem Run from the repository root or by double click.
 setlocal
 cd /d "%~dp0"
 
@@ -21,7 +22,7 @@ dotnet build "%PROJ%" -c Release --no-restore -v:m
 if errorlevel 1 goto error
 echo.
 
-echo [3/4] publish to .\publish
+echo [3/4] publish to .\publish (win-x64, self-contained, single-file)
 if exist "publish" rmdir /s /q "publish"
 dotnet publish "%PROJ%" -c Release --no-restore -o "publish" -v:m
 if errorlevel 1 goto error
@@ -48,7 +49,7 @@ goto done
 echo.
 echo ========================================
 echo  DONE
-echo  publish\  - service files
+echo  publish\  - service files (ParsecIntegrationClient.exe + appsettings.json)
 if exist "Output\*.exe" echo  Output\   - installer
 echo ========================================
 pause

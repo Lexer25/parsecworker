@@ -1,6 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Runtime.CompilerServices;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,19 +19,21 @@ namespace ParsecIntegrationClient
     {
         private static int Main(string[] args)
         {
-            // Зависимости встроены в exe, поэтому загрузчик подключается до первой строки,
-            // работающей с типами Microsoft.Extensions.* (JIT ищет их при компиляции метода).
-            EmbeddedAssemblies.Register();
+            // База Артонит — Firebird с Charset=win1251. В .NET 8 кодовые страницы
+            // (кроме UTF-8/Unicode) доступны только после регистрации провайдера.
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-            if (Array.Exists(args, argument => string.Equals(argument, "--verify-embedded", StringComparison.OrdinalIgnoreCase)))
+            // Диагностика поставки: проверяет, что single-file exe распаковывается и
+            // запускается, не требуя ни Парсека, ни базы. Вывод пригоден для скриптов.
+            if (Array.Exists(args, argument => string.Equals(argument, "--version", StringComparison.OrdinalIgnoreCase)))
             {
-                return VerifyEmbedded();
+                Console.WriteLine(ApplicationInfo.Version);
+                return 0;
             }
 
             return Run(args);
         }
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
         private static int Run(string[] args)
         {
             IHost host = null;
@@ -57,28 +58,6 @@ namespace ParsecIntegrationClient
             }
         }
 
-        /// <summary>
-        /// Проверка поставки из одного файла: все ли встроенные сборки загружаются.
-        /// Запуск: ParsecIntegrationClient.exe --verify-embedded
-        /// </summary>
-        private static int VerifyEmbedded()
-        {
-            Console.WriteLine("Версия: " + ApplicationInfo.Version);
-            Console.WriteLine("Файл: " + ApplicationInfo.ExecutablePath);
-            Console.WriteLine("Встроенные сборки:");
-
-            List<string> failures = EmbeddedAssemblies.Verify();
-
-            if (failures.Count == 0)
-            {
-                Console.WriteLine("ИТОГ: все встроенные сборки загружены, поставка из одного файла работоспособна.");
-                return 0;
-            }
-
-            Console.WriteLine("ИТОГ: ошибок " + failures.Count + ".");
-            return 1;
-        }
-
         private static IHost BuildHost(string[] args)
         {
             // Конфигурация собирается до хоста: каталог данных, уровень журнала и адрес
@@ -94,7 +73,6 @@ namespace ParsecIntegrationClient
 
             Paths.Initialize(options);
             SettingsService.Initialize(options);
-            ParsecClient.Configure(SettingsService.ParsecUrl);
 
             LogLevel applicationLevel = Logger.ParseLevel(SettingsService.LogLevel);
             LogLevel frameworkLevel = Logger.ParseLevel(options.Log.FrameworkLevel);

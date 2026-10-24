@@ -1,6 +1,6 @@
-﻿; Установщик службы Parsec Integration Client.
+﻿; Установщик службы Parsec Integration Client (.NET 8, self-contained single-file).
 ; Заменяет ClickOnce-публикацию прежней версии (setup.exe + Application Files).
-; Сборка: build.cmd  ->  Output\ParsecIntegrationSetup_v1.0.5.45.exe
+; Сборка: build.cmd  ->  Output\ParsecIntegrationSetup_v<версия>.exe
 ; Требуется Inno Setup 6 (ISCC.exe).
 
 #define MyAppName "Parsec Integration Client"

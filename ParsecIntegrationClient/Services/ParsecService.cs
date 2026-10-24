@@ -132,7 +132,7 @@ namespace ParsecIntegrationClient.Services
                     return OperationResult.Error(desc, errorMessage, code);
                 }
 
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
                 var res = integServ.CreatePerson(ClientState.SessionID, person);
 
                 if (res.Result != ClientState.Result_Success)
@@ -206,7 +206,7 @@ namespace ParsecIntegrationClient.Services
                     return OperationResult.Error(desc, errorMessage, code);
                 }
 
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
                 var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, new Guid(people.GUID_PEP));
 
                 if (sessionResult.Result != ClientState.Result_Success)
@@ -261,7 +261,7 @@ namespace ParsecIntegrationClient.Services
                 Logger.Log<ParsecService>("Info",
                     $"629 сотрудник {JsonConvert.SerializeObject(row)} присутвует в Парсек, продолжаю удаление сотрудника.");
 
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
                 var res = integServ.DeletePerson(ClientState.SessionID, new Guid(row.ID_CARD));
                 Logger.Log<ParsecService>("Error", $"1358 РЕЗУЛЬТАТ УДАЛЕНИЯ {JsonConvert.SerializeObject(res)}");
 
@@ -312,7 +312,7 @@ namespace ParsecIntegrationClient.Services
                     return OperationResult.Error(desc, errorMessage, code);
                 }
 
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
 
                 var org = new OrgUnit()
                 {
@@ -366,7 +366,7 @@ namespace ParsecIntegrationClient.Services
                     return OperationResult.Error(desc, errorMessage, code);
                 }
 
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
 
                 var org = new OrgUnit()
                 {
@@ -418,7 +418,7 @@ namespace ParsecIntegrationClient.Services
 
             try
             {
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
 
                 Logger.Log<ParsecService>("Warning", $"584 Удаление организации | {row.ID_CARD}");
 
@@ -469,7 +469,7 @@ namespace ParsecIntegrationClient.Services
                         $"| tab_num = {model.TAB_NUM_PEP} " +
                         $"| ФИО (artsec): {model.SURNAME} {model.NAME} {model.PATRONYMIC}");
 
-                    var integServ = new IntegrationService();
+                    using var integServ = ParsecClient.Create();
                     var person = integServ.GetPerson(ClientState.SessionID, new Guid(model.GUID_PEP));
 
                     if (person == null)
@@ -538,7 +538,7 @@ namespace ParsecIntegrationClient.Services
         {
             try
             {
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
 
                 string hexValue = Convert.ToInt64(row.ID_CARD).ToString("X8");
 
@@ -567,7 +567,7 @@ namespace ParsecIntegrationClient.Services
 
         public static Guid CheckAccessGroups(List<Guid> InheritedAccessGroups)
         {
-            var integServ = new IntegrationService();
+            using var integServ = ParsecClient.Create();
             var accessGroups = integServ.GetAccessGroups(ClientState.SessionID);
 
             foreach (var accessGroup in accessGroups)
@@ -589,7 +589,7 @@ namespace ParsecIntegrationClient.Services
         {
             try
             {
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
                 var result = integServ.GetObjectName(ClientState.SessionID, guid);
 
                 if (result != null && result.Value != null && !string.IsNullOrEmpty(result.Value.ToString()))
@@ -610,7 +610,7 @@ namespace ParsecIntegrationClient.Services
         {
             try
             {
-                var integServ = new IntegrationService();
+                using var integServ = ParsecClient.Create();
                 var accessGroupsResult = integServ.GetAccessGroups(ClientState.SessionID);
 
                 if (accessGroupsResult == null)
@@ -663,7 +663,7 @@ namespace ParsecIntegrationClient.Services
 
         private static OperationResult ProcessAccessCatAddition(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)
         {
-            var integServ = new IntegrationService();
+            using var integServ = ParsecClient.Create();
             var accessGroupGuid = new Guid(model.GUID_ACCGROUP);
             var accesGroup = GetAccessGroups(accessGroupGuid);
             var person = integServ.GetPerson(ClientState.SessionID, new Guid(model.GUID_PEP));
@@ -710,7 +710,7 @@ namespace ParsecIntegrationClient.Services
 
         private static OperationResult ProcessAccessCatRemoval(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)
         {
-            var integServ = new IntegrationService();
+            using var integServ = ParsecClient.Create();
             var accessGroupGuid = new Guid(model.GUID_ACCGROUP);
             var person = integServ.GetPerson(ClientState.SessionID, new Guid(model.GUID_PEP));
 
@@ -756,7 +756,7 @@ namespace ParsecIntegrationClient.Services
 
         private static void ProcessSingleIdentifier(
             Identifier identifier, AccessGroup accesGroup, Guid accessGroupGuid,
-            Guid editSessionID, IntegrationService integServ, DbModelRowIDInDev row)
+            Guid editSessionID, IntegrationServiceSoapClient integServ, DbModelRowIDInDev row)
         {
             Logger.Log<ParsecService>("Info", $"350 Обработка карты {identifier.CODE} добавление категории доступ {accessGroupGuid}");
 
@@ -775,7 +775,7 @@ namespace ParsecIntegrationClient.Services
 
         private static void ProcessSingleIdentifierRemoval(
             Identifier identifier, Guid accessGroupToRemove,
-            Guid editSessionID, IntegrationService integServ, DbModelRowIDInDev row)
+            Guid editSessionID, IntegrationServiceSoapClient integServ, DbModelRowIDInDev row)
         {
             Logger.Log<ParsecService>("Info", $"941 Обработка удаления для карты {identifier.CODE} {identifier.ACCGROUP_ID}. Удаляю категорию доступа {accessGroupToRemove}");
 
@@ -812,7 +812,7 @@ namespace ParsecIntegrationClient.Services
         }
 
         private static Guid DetermineAccessGroup(
-            Identifier identifier, AccessGroup targetGroup, Guid targetGroupId, IntegrationService integServ)
+            Identifier identifier, AccessGroup targetGroup, Guid targetGroupId, IntegrationServiceSoapClient integServ)
         {
             Logger.Log<ParsecService>("Info", $"382 Старт формирования группы для {identifier.CODE}. Уже имеется группа {identifier.ACCGROUP_ID}, добавляется группа {targetGroupId}");
 
@@ -833,7 +833,7 @@ namespace ParsecIntegrationClient.Services
             return CreateAccessGroupWithInheritance(inheritedChain, integServ);
         }
 
-        private static List<Guid> BuildInheritedChain(Guid currentGroupId, Guid targetGroupId, IntegrationService integServ)
+        private static List<Guid> BuildInheritedChain(Guid currentGroupId, Guid targetGroupId, IntegrationServiceSoapClient integServ)
         {
             var inheritedGroups = integServ.GetInheritedAccessGroups(ClientState.SessionID, currentGroupId)?.ToList()
                                   ?? new List<Guid>();
@@ -846,7 +846,7 @@ namespace ParsecIntegrationClient.Services
             return inheritedGroups.Distinct().ToList();
         }
 
-        private static Guid CreateAccessGroupWithInheritance(List<Guid> inheritedChain, IntegrationService integServ)
+        private static Guid CreateAccessGroupWithInheritance(List<Guid> inheritedChain, IntegrationServiceSoapClient integServ)
         {
             var schedules = integServ.GetAccessSchedules(ClientState.SessionID);
             if (schedules == null || schedules.Length == 0)
@@ -870,7 +870,7 @@ namespace ParsecIntegrationClient.Services
             return newGroupId;
         }
 
-        private static string BuildGroupName(List<Guid> inheritedChain, IntegrationService integServ)
+        private static string BuildGroupName(List<Guid> inheritedChain, IntegrationServiceSoapClient integServ)
         {
             var groupNames = inheritedChain
                 .Select(groupId => GetAccessGroups(groupId)?.NAME)
@@ -892,7 +892,7 @@ namespace ParsecIntegrationClient.Services
 
         private static Identifier BuildUpdatedIdentifierAfterRemoval(
             Identifier originalIdentifier, List<Guid> inheritedGroups,
-            Guid removedGroupId, IntegrationService integServ)
+            Guid removedGroupId, IntegrationServiceSoapClient integServ)
         {
             var updatedIdentifier = originalIdentifier;
 
@@ -927,7 +927,7 @@ namespace ParsecIntegrationClient.Services
             return updatedIdentifier;
         }
 
-        private static void CloseEditingSession(IntegrationService integServ, Guid sessionId)
+        private static void CloseEditingSession(IntegrationServiceSoapClient integServ, Guid sessionId)
         {
             if (integServ == null || sessionId == Guid.Empty)
             {
@@ -946,7 +946,7 @@ namespace ParsecIntegrationClient.Services
             }
         }
 
-        private static void CloseOrgUnitEditingSession(IntegrationService integServ, Guid sessionId)
+        private static void CloseOrgUnitEditingSession(IntegrationServiceSoapClient integServ, Guid sessionId)
         {
             if (integServ == null || sessionId == Guid.Empty)
             {

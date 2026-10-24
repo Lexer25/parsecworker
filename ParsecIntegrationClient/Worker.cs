@@ -146,7 +146,7 @@ namespace ParsecIntegrationClient
         {
             try
             {
-                var client = ParsecClient.Create();
+                using var client = ParsecClient.Create();
                 var result = client.OpenSession(_options.Parsec.Domain, _options.Parsec.User, _options.Parsec.Password);
 
                 if (result == null || result.Result != ClientState.Result_Success)
@@ -164,7 +164,7 @@ namespace ParsecIntegrationClient
                 _logger.LogWarning(
                     "Подключение к SOAP Парсека установлено: {Url}; протокол SOAP: {Protocol}; сессия: {Session}",
                     SettingsService.ParsecUrl,
-                    ParsecClient.ProtocolName(client.SoapVersion),
+                    ParsecClient.ProtocolName(),
                     ClientState.SessionID);
 
                 try
@@ -199,7 +199,11 @@ namespace ParsecIntegrationClient
 
             try
             {
-                ParsecClient.Create().CloseSession(session);
+                using (var client = ParsecClient.Create())
+                {
+                    client.CloseSession(session);
+                }
+
                 _logger.LogInformation("Сессия Парсека закрыта");
             }
             catch (Exception ex)
