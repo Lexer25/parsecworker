@@ -1,7 +1,8 @@
-﻿using FirebirdSql.Data.FirebirdClient;
+using FirebirdSql.Data.FirebirdClient;
 using ParsecIntegrationClient.Models;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 
 namespace ParsecIntegrationClient.Services
@@ -122,6 +123,102 @@ namespace ParsecIntegrationClient.Services
         }
 
         /// <summary>
+        /// Читает срок действия карты из таблицы CARD базы СКУД Артонит:
+        /// <c>select c.timestart, c.timeend from card c where c.id_card='...'</c>.
+        /// Нужен для того, чтобы при добавлении карты человеку передать в Парсек
+        /// IdentifierTemp.VALID_FROM и VALID_TO.
+        /// Возвращает true, только если карта найдена и обе даты заполнены;
+        /// при любой ошибке (нет карты, NULL в датах, сбой БД) — false, даты null.
+        /// </summary>
+        public static bool TryGetCardPeriod(string idCard, out DateTime? validFrom, out DateTime? validTo)
+        {
+            validFrom = null;
+            validTo = null;
+
+            if (string.IsNullOrWhiteSpace(idCard))
+            {
+                Logger.Log<DatabaseService>("Warning", "TryGetCardPeriod: не задан ID_CARD, срок действия карты не читается");
+                return false;
+            }
+
+            var query = $"select c.timestart, c.timeend from card c where c.id_card='{idCard.Replace("'", "''")}'";
+            Logger.Log<DatabaseService>("Debug", $"TryGetCardPeriod: {query}");
+
+            try
+            {
+                var connectionString = SettingsService.DatabaseConnectionString;
+
+                using (var connection = new FbConnection(connectionString))
+                {
+                    connection.Open();
+
+                    using (var cmd = new FbCommand(query, connection))
+                    using (var dr = cmd.ExecuteReader())
+                    {
+                        if (!dr.Read())
+                        {
+                            Logger.Log<DatabaseService>("Warning", $"TryGetCardPeriod: карта {idCard} не найдена в таблице CARD");
+                            return false;
+                        }
+
+                        validFrom = ReadCardDate(dr, 0, "timestart", idCard);
+                        validTo = ReadCardDate(dr, 1, "timeend", idCard);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log<DatabaseService>("Exception", $"TryGetCardPeriod: ошибка чтения срока действия карты {idCard}: {ex.Message}");
+                validFrom = null;
+                validTo = null;
+                return false;
+            }
+
+            if (!validFrom.HasValue || !validTo.HasValue)
+            {
+                Logger.Log<DatabaseService>("Warning",
+                    $"TryGetCardPeriod: у карты {idCard} не заполнен срок действия (CARD.TIMESTART/CARD.TIMEEND), VALID_FROM/VALID_TO не передаются");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Значение колонки срока действия карты → DateTime. В базе Артонит это
+        /// TIMESTAMP/DATE (Firebird отдаёт DateTime); строку разбираем на случай
+        /// других типов колонки. TIME (TimeSpan) датой не является: без даты
+        /// срок действия карты задать нельзя.
+        /// </summary>
+        private static DateTime? ReadCardDate(FbDataReader dr, int index, string columnName, string idCard)
+        {
+            if (dr.IsDBNull(index))
+            {
+                return null;
+            }
+
+            var value = dr.GetValue(index);
+
+            if (value is DateTime dateTime)
+            {
+                return dateTime;
+            }
+
+            if (value is string text)
+            {
+                if (DateTime.TryParse(text, CultureInfo.CurrentCulture, DateTimeStyles.None, out var parsed)
+                    || DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+                {
+                    return parsed;
+                }
+            }
+
+            Logger.Log<DatabaseService>("Error",
+                $"TryGetCardPeriod: CARD.{columnName}={value} у карты {idCard} не является датой (тип {value?.GetType().Name})");
+            return null;
+        }
+
+        /// <summary>
         /// Проверяет, что база Артонит доступна: открывает соединение и выполняет простой запрос.
         /// Нужна, чтобы ошибка подключения была видна в журнале сразу, а не только в момент
         /// обработки очереди (раньше при недоступном Парсеке до БД дело вообще не доходило).
@@ -157,6 +254,205 @@ namespace ParsecIntegrationClient.Services
                 return false;
             }
         }
+        // ==================== Очередь PARSEC_QUEUE ====================
+
+        /// <summary>
+        /// Первые (по id) незавершённые события. Порядок по id обязателен: интегратор
+        /// обрабатывает очередь строго последовательно и останавливается на первой ошибке.
+        /// </summary>
+        public static List<DbModelQueueRow> GetQueueBatch(int maxRows)
+        {
+            if (maxRows <= 0) maxRows = 100;
+            if (maxRows > 1000) maxRows = 1000;
+
+            var rows = new List<DbModelQueueRow>();
+            string query =
+                "select first " + maxRows + " q.id, q.operation, q.id_pep, q.id_card, " +
+                "q.attempts, q.max_attempts, q.status, q.next_attempt " +
+                "from parsec_queue q where q.status in (0, 3) order by q.id";
+
+            using (var connection = new FbConnection(SettingsService.DatabaseConnectionString))
+            {
+                connection.Open();
+
+                using (var cmd = new FbCommand(query, connection))
+                using (var dr = cmd.ExecuteReader())
+                {
+                    while (dr.Read())
+                    {
+                        rows.Add(new DbModelQueueRow
+                        {
+                            ID = Convert.ToInt64(dr.GetValue(0)),
+                            OPERATION = Convert.ToInt32(dr.GetValue(1)),
+                            ID_PEP = dr.IsDBNull(2) ? (int?)null : Convert.ToInt32(dr.GetValue(2)),
+                            ID_CARD = dr.IsDBNull(3) ? null : Convert.ToString(dr.GetValue(3)),
+                            ATTEMPTS = Convert.ToInt32(dr.GetValue(4)),
+                            MAX_ATTEMPTS = Convert.ToInt32(dr.GetValue(5)),
+                            STATUS = Convert.ToInt32(dr.GetValue(6))
+                        });
+                    }
+                }
+            }
+
+            return rows;
+        }
+
+        /// <summary>Забирает строку в работу. false — строку уже забрал другой экземпляр.</summary>
+        public static bool TryClaimQueueRow(long id, string workerId, DateTime leaseUntil)
+        {
+            const string sql =
+                "update parsec_queue set status = 1, started_at = current_timestamp, " +
+                "updated_at = current_timestamp, worker_id = @worker, lease_until = @lease " +
+                "where id = @id and status in (0, 3)";
+
+            using (var connection = new FbConnection(SettingsService.DatabaseConnectionString))
+            {
+                connection.Open();
+
+                using (var cmd = new FbCommand(sql, connection))
+                {
+                    cmd.Parameters.Add("@id", FbDbType.BigInt).Value = id;
+                    cmd.Parameters.Add("@worker", FbDbType.VarChar).Value = workerId;
+                    cmd.Parameters.Add("@lease", FbDbType.TimeStamp).Value = leaseUntil;
+                    return cmd.ExecuteNonQuery() == 1;
+                }
+            }
+        }
+
+        public static void CompleteQueueRow(long id, int attempts, int durationMs)
+        {
+            const string sql =
+                "update parsec_queue set status = 2, finished_at = current_timestamp, " +
+                "updated_at = current_timestamp, attempts = @attempts, duration_ms = @duration, " +
+                "error_code = null, error_text = null, lease_until = null where id = @id";
+
+            ExecuteQueueUpdate(sql, cmd =>
+            {
+                cmd.Parameters.Add("@id", FbDbType.BigInt).Value = id;
+                cmd.Parameters.Add("@attempts", FbDbType.Integer).Value = attempts;
+                cmd.Parameters.Add("@duration", FbDbType.Integer).Value = durationMs;
+            });
+        }
+
+        public static void SkipQueueRow(long id, int attempts, int durationMs, string reason)
+        {
+            const string sql =
+                "update parsec_queue set status = 5, finished_at = current_timestamp, " +
+                "updated_at = current_timestamp, attempts = @attempts, duration_ms = @duration, " +
+                "error_code = null, error_text = @reason, lease_until = null where id = @id";
+
+            ExecuteQueueUpdate(sql, cmd =>
+            {
+                cmd.Parameters.Add("@id", FbDbType.BigInt).Value = id;
+                cmd.Parameters.Add("@attempts", FbDbType.Integer).Value = attempts;
+                cmd.Parameters.Add("@duration", FbDbType.Integer).Value = durationMs;
+                cmd.Parameters.Add("@reason", FbDbType.VarChar).Value = Shorten(reason, 1000);
+            });
+        }
+
+        public static void FailQueueRow(long id, int attempts, int status, int? errorCode,
+            string errorText, int durationMs)
+        {
+            const string sql =
+                "update parsec_queue set status = @status, finished_at = current_timestamp, " +
+                "updated_at = current_timestamp, attempts = @attempts, duration_ms = @duration, " +
+                "error_code = @code, error_text = @text, lease_until = null, " +
+                "next_attempt = current_timestamp where id = @id";
+
+            ExecuteQueueUpdate(sql, cmd =>
+            {
+                cmd.Parameters.Add("@id", FbDbType.BigInt).Value = id;
+                cmd.Parameters.Add("@status", FbDbType.Integer).Value = status;
+                cmd.Parameters.Add("@attempts", FbDbType.Integer).Value = attempts;
+                cmd.Parameters.Add("@duration", FbDbType.Integer).Value = durationMs;
+                cmd.Parameters.Add("@code", FbDbType.Integer).Value =
+                    errorCode.HasValue ? (object)errorCode.Value : DBNull.Value;
+                cmd.Parameters.Add("@text", FbDbType.VarChar).Value = Shorten(errorText, 1000);
+            });
+        }
+
+        /// <summary>Пишет попытку в историю. Ошибка журнала не должна ломать обработку.</summary>
+        public static void WriteQueueLog(long queueId, int attemptNo, DateTime startedAt, int status,
+            int? errorCode, string errorText, int durationMs, string workerId, string details)
+        {
+            const string sql =
+                "insert into parsec_queue_log (queue_id, attempt_no, started_at, finished_at, " +
+                "status, error_code, error_text, duration_ms, worker_id, details) values " +
+                "(@queue, @attempt, @started, current_timestamp, @status, @code, @text, " +
+                "@duration, @worker, @details)";
+
+            try
+            {
+                using (var connection = new FbConnection(SettingsService.DatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    using (var cmd = new FbCommand(sql, connection))
+                    {
+                        cmd.Parameters.Add("@queue", FbDbType.BigInt).Value = queueId;
+                        cmd.Parameters.Add("@attempt", FbDbType.Integer).Value = attemptNo;
+                        cmd.Parameters.Add("@started", FbDbType.TimeStamp).Value = startedAt;
+                        cmd.Parameters.Add("@status", FbDbType.Integer).Value = status;
+                        cmd.Parameters.Add("@code", FbDbType.Integer).Value =
+                            errorCode.HasValue ? (object)errorCode.Value : DBNull.Value;
+                        cmd.Parameters.Add("@text", FbDbType.VarChar).Value = Shorten(errorText, 1000);
+                        cmd.Parameters.Add("@duration", FbDbType.Integer).Value = durationMs;
+                        cmd.Parameters.Add("@worker", FbDbType.VarChar).Value = workerId;
+                        cmd.Parameters.Add("@details", FbDbType.Text).Value =
+                            string.IsNullOrWhiteSpace(details) ? (object)DBNull.Value : details;
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log<DatabaseService>("Exception", "Не удалось записать историю очереди: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Возвращает в работу строки, зависшие в статусе 1 (служба упала во время SOAP-вызова).
+        /// Вызывается при старте Worker.
+        /// </summary>
+        public static int RecoverStaleQueueRows()
+        {
+            const string sql =
+                "update parsec_queue set status = 3, next_attempt = current_timestamp, " +
+                "lease_until = null, updated_at = current_timestamp, " +
+                "error_text = 'Сброшено при старте службы' " +
+                "where status = 1 and (lease_until is null or lease_until < current_timestamp)";
+
+            using (var connection = new FbConnection(SettingsService.DatabaseConnectionString))
+            {
+                connection.Open();
+
+                using (var cmd = new FbCommand(sql, connection))
+                {
+                    return cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private static void ExecuteQueueUpdate(string sql, Action<FbCommand> bind)
+        {
+            using (var connection = new FbConnection(SettingsService.DatabaseConnectionString))
+            {
+                connection.Open();
+
+                using (var cmd = new FbCommand(sql, connection))
+                {
+                    bind(cmd);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private static string Shorten(string text, int maxLength)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            return text.Length <= maxLength ? text : text.Substring(0, maxLength);
+        }
+
         public static void DeleteIdInDevById(string id)
         {
             try

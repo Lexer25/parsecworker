@@ -1,10 +1,26 @@
-﻿# ParsecIntegrationClient
+# ParsecIntegrationClient
 
 Модуль интеграции СКУД Артонит (Firebird/ShieldPro) с СКУД Парсек по SOAP-сервису
 `IntegrationService`. Приложение — Worker на `Microsoft.Extensions.Hosting`: один exe
 работает и из консоли, и как служба Windows.
 
-Текущая версия — **3.0.0** на **.NET 8** (`net8.0-windows`, win-x64).
+Текущая версия — **4.0.0** на **.NET 8** (`net8.0-windows`, win-x64).
+
+## Что изменилось в 4.0.0
+
+Интегратор переведён с `CARDINDEV` на собственную очередь `PARSEC_QUEUE`
+(Firebird 1.5, dialect 3, WIN1251).
+
+| Было (3.0.x) | Стало (4.0.0) |
+|---|---|
+| очередь в `CARDINDEV`: чужая таблица, `DELETE` после обработки, `ATTEMPTS` правится в ней же | своя `PARSEC_QUEUE`; строки не удаляются, статус и история остаются |
+| классификация «это для Парсека» — join по `device/servertype` на каждом чтении | триггеры пишут событие явно, привязка к устройствам больше не нужна |
+| после 20 ошибок строка навсегда исчезала из выборки (`attempts < 20`) | статус 4 (dead letter) виден запросом, ничего не пропадает молча |
+| глобальный стоп на первой ошибке, пауза фактически 600 с | глобальный стоп сохранён, пауза `ErrorTimeoutMinutes` (1 мин) |
+| истории нет: успешная строка удалена | `PARSEC_QUEUE` + `PARSEC_QUEUE_LOG`, каждая попытка с ошибкой и длительностью |
+| ошибка «уже существует» навсегда блокировала событие | повторная доставка идемпотентна: «уже существует»/«не найдено» = успех |
+
+SQL-скрипты и описание очереди — в [db/README.md](../../db/README.md).
 
 ## Что изменилось в 3.0.0
 
@@ -34,9 +50,9 @@ Services/Paths.cs                рабочие каталоги службы
 Services/ParsecClient.cs         фабрика SOAP-клиента: адрес, таймаут, binding
 Services/Logger.cs               фасад Logger.Log<T> поверх ILogger
 Services/Logging/                файловый журнал в прежнем формате
-Services/QueueProcessor.cs       обработка очереди cardindev (бывший MainJob)
+Services/QueueProcessor.cs       обработка очереди PARSEC_QUEUE (бывший MainJob)
 Services/ParsecService.cs        операции с Парсеком
-Services/DatabaseService.cs      работа с БД Артонит
+Services/DatabaseService.cs      работа с БД Артонит и очередью PARSEC_QUEUE
 Services/StateService.cs         state.json
 Services/SettingsService.cs      настройки + совместимость со старым appsettings.json
 Models/                          модели БД, состояния и результатов операций
@@ -44,7 +60,8 @@ Properties/PublishProfiles/      профиль публикации в папк
 tools/regenerate-parsec-client.ps1   перегенерация SOAP-клиента из WSDL
 ```
 
-В корне репозитория: `build.cmd` (сборка + публикация + установщик) и `ParsecSetup.iss`.
+В корне репозитория: `build.cmd` (сборка + публикация + установщик), `ParsecSetup.iss`
+и каталог `db/` — SQL-скрипты очереди `PARSEC_QUEUE` (см. [db/README.md](../../db/README.md)).
 
 ## Требования
 
@@ -52,6 +69,9 @@ tools/regenerate-parsec-client.ps1   перегенерация SOAP-клиен�
   Первый `restore` и первый запуск скрипта перегенерации требуют доступа к nuget.org.
 - **Стенд:** Windows x64. Отдельно ставить .NET 8 не нужно: поставка self-contained.
   Нужны только права на запись в `Paths:MainPath` для учётной записи службы.
+- **База:** Firebird 1.5 (ODS 10.1) или новее. Перед первым запуском 4.0.0 на базе
+  должны быть выполнены скрипты `db/01..03` (таблица `PARSEC_QUEUE`, процедура,
+  триггеры). Без них служба пишет `Critical` и очередь не обрабатывает.
 
 ## Сборка и запуск
 
@@ -88,7 +108,8 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
 
 - `publish\` — `ParsecIntegrationClient.exe` (≈38 МБ, все зависимости внутри),
   `appsettings.json`, `install-service.ps1`, `uninstall-service.ps1`, `README.md`, `*.pdb`;
-- `Output\ParsecIntegrationSetup_v3.0.0.0.exe` — установщик (Inno Setup 6, `ParsecSetup.iss`).
+- `publish\db\` — SQL-скрипты `PARSEC_QUEUE` (копируются из `db\`);
+- `Output\ParsecIntegrationSetup_v4.0.0.0.exe` — установщик (Inno Setup 6, `ParsecSetup.iss`).
 
 ### Поставка из одного файла
 
@@ -152,6 +173,11 @@ cd .\publish
 поверх старой версии: остановить службу, заменить файлы содержимым `publish`, запустить
 `install-service.ps1` (он обновит путь к exe и запустит службу).
 
+Перед обновлением на 4.0.0 **отдельно** примените к базе `db/01..03` под `SYSDBA`
+(см. [db/README.md](../../db/README.md)). Установщик не выполняет DDL: у него нет
+прав на изменение схемы. Если `PARSEC_QUEUE` ещё нет, новая служба не обработает
+очередь, но и не испортит `CARDINDEV`.
+
 Скрипт создаёт службу с `start= auto`, описанием и перезапуском при падении (3 попытки
 с интервалом 60 с). Учётная запись по умолчанию — `NT AUTHORITY\LocalService`; другую можно
 указать параметрами `-Account` и `-Password`. Этой учётной записи нужны права на запись
@@ -181,9 +207,12 @@ cd .\publish
 | `Parsec:SessionRetrySeconds` | пауза между попытками авторизации | — |
 | `Service:DatabaseConnectionString` | строка подключения к Артонит (**обязательна**) | `_databaseConnectionString` |
 | `Service:DatabaseRetrySeconds` | пауза между проверками БД, секунды | — |
-| `Service:JobIntervalSeconds` | интервал обработки очереди | 600 с (Quartz) |
-| `Service:ErrorTimeoutMinutes` | пауза после ошибки | `_errorTimeoutMinutes` |
-| `Service:SkipErrCode` | коды ошибок, удаляющие задание | `_skipErrCode` |
+| `Service:JobIntervalSeconds` | пауза, когда очередь пуста, секунды | 600 с (Quartz) |
+| `Service:ErrorTimeoutMinutes` | пауза после ошибки, минуты; на это время обработка останавливается | `_errorTimeoutMinutes` |
+| `Service:SkipErrCode` | коды ошибок, при которых событие пропускается (статус 5) | `_skipErrCode` |
+| `Service:QueueBatchSize` | сколько строк `PARSEC_QUEUE` читать за проход | — |
+| `Service:QueueLeaseMinutes` | аренда строки в статусе 1, минуты | — |
+| `Service:QuerySelectIdDevCardString` | устаревший запрос к `CARDINDEV`; в 4.0.0 не используется | `_querySelectIdDevCardString` |
 
 Строка подключения к Firebird обычно содержит `Charset=win1251`; провайдер кодовых страниц
 в .NET 8 регистрируется в `Program.Main`.
@@ -200,6 +229,28 @@ cd .\publish
 
 Встроенной строки подключения в коде больше нет: пустая настройка — явная ошибка в журнале,
 а не молчаливая подстановка чужого пути.
+
+### Очередь PARSEC_QUEUE
+
+С 4.0.0 служба не читает `CARDINDEV`. Задания лежат в `PARSEC_QUEUE`, историей
+служит она же (строки не удаляются), детали попыток — в `PARSEC_QUEUE_LOG`.
+
+- Триггеры на `PEOPLE`, `ORGANIZATION`, `CARD`, `SS_ACCESSUSER` вызывают
+  `PARSEC_ENQUEUE`; повторные события одного объекта склеиваются по `DEDUP_KEY`.
+- `QueueProcessor` берёт строки строго по `id`. **Любая ошибка останавливает проход**:
+  следующие события не обрабатываются, пока текущее не будет исправлено или не
+  исчерпает `MAX_ATTEMPTS`. Пауза — `Service:ErrorTimeoutMinutes`.
+- Статусы: 0 новая, 1 в работе, 2 успех, 3 повтор, 4 dead letter, 5 пропущено,
+  6 отменено (объект удалён/перепривязан).
+- Успешные и неуспешные строки остаются в таблице. Диагностика — SQL-запросами из
+  [db/README.md](../../db/README.md).
+- Перед первым запуском на базе должны быть выполнены `db/01..03`; без таблицы
+  служба пишет `Critical` и не обрабатывает очередь.
+- Старые триггеры `CARDINDEV` не изменяются — остаётся возможность отката.
+
+Если `PARSEC_QUEUE` ещё нет, служба не падает: `Worker` сообщает
+`Не удалось проверить очередь PARSEC_QUEUE...` и повторяет проверку через
+`Service:DatabaseRetrySeconds`.
 
 ### Совместимость со старой установкой
 
@@ -225,6 +276,10 @@ cd .\publish
 
 Уровень `Exception` пишется как `Error` (в `ILogger` такого уровня нет), в конце строки
 выводится стек исключения. Пароль из строки подключения в журнал не попадает — маскируется.
+
+С 4.0.0 журнал — не единственный источник истории: каждое событие и каждая попытка
+остаются в базе (`PARSEC_QUEUE`, `PARSEC_QUEUE_LOG`). Файл журнала по-прежнему нужен
+для диагностики SOAP и запуска/остановки службы.
 
 При успешном подключении к Парсеку в журнал пишутся две строки уровня `Warning`:
 

@@ -47,7 +47,6 @@ namespace ParsecIntegrationClient.Services
             catch (Exception ex)
             {
                 Logger.Log<ParsecService>("Error", $"199 Critical error in AddIdentifierPeople: {ex.Message}");
-                DatabaseService.IncrementAttemp(row);
                 return OperationResult.Error($"201 Критическая ошибка: {ex.Message}", ex.Message, 9);
             }
         }
@@ -74,7 +73,6 @@ namespace ParsecIntegrationClient.Services
             catch (Exception ex)
             {
                 Logger.Log<ParsecService>("Error", $"853 Critical error in RemoveIdentifierPeople: {ex.Message}");
-                DatabaseService.IncrementAttemp(row);
                 return OperationResult.Error($"855 Критическая ошибка: {ex.Message}", ex.Message, 9);
             }
         }
@@ -94,7 +92,7 @@ namespace ParsecIntegrationClient.Services
 
                 var people = DatabaseService.Get<DbModelAddPeople>(query);
 
-                if (people == null)
+                if (people == null || string.IsNullOrWhiteSpace(people.GUID_PEP))
                 {
                     var descNotFound = $"475 Пользователь с {row.ID_PEP} не найден в базе СКУД Артонит.";
                     Logger.Log<ParsecService>("Warning", descNotFound);
@@ -118,9 +116,11 @@ namespace ParsecIntegrationClient.Services
                 {
                     const int code = 18;
                     var desc = $"577 КОД ОШИБКИ: {code}. Уже имеется сотрудник с GUID {person.ID}. Работаю завершаю.";
-                    var errorMessage = $"1134 Ошибка: сотрудник с GUID {person.ID} уже существует в Parsec";
+                    var errorMessage = $"1134 Сотрудник с GUID {person.ID} уже существует в Parsec";
                     Logger.Log<ParsecService>("Warning", desc);
-                    return OperationResult.Error(desc, errorMessage, code);
+                    // Повтор после сбоя связи: человек уже создан. Это не ошибка интеграции,
+                    // иначе событие навсегда застрянет в очереди.
+                    return OperationResult.Warn(desc, errorMessage);
                 }
 
                 if (!CheckGuidePresent(person.ORG_ID))
@@ -168,7 +168,7 @@ namespace ParsecIntegrationClient.Services
 
                 var people = DatabaseService.Get<DbModelAddPeople>(query);
 
-                if (people == null)
+                if (people == null || string.IsNullOrWhiteSpace(people.GUID_PEP))
                 {
                     var descNotFound = $"1736 Пользователь с {row.ID_PEP} не найден в базе СКУД Артонит.";
                     Logger.Log<ParsecService>("Warning", descNotFound);
@@ -247,20 +247,12 @@ namespace ParsecIntegrationClient.Services
         public static OperationResult RemovePeople(DbModelRowIDInDev row)
         {
             Logger.Log<ParsecService>("Error", $"608 start RemovePeople {JsonConvert.SerializeObject(row.ID)}");
-            DatabaseService.IncrementAttemp(row);
 
             try
             {
-                if (!CheckGuidePresent(new Guid(row.ID_CARD)))
-                {
-                    var desc = $"629 сотрудник отсутвует в Парсек {JsonConvert.SerializeObject(row)}. Команда по удалению выполнена успешно.";
-                    Logger.Log<ParsecService>("Info", desc);
-                    return OperationResult.Ok(desc);
-                }
-
-                Logger.Log<ParsecService>("Info",
-                    $"629 сотрудник {JsonConvert.SerializeObject(row)} присутвует в Парсек, продолжаю удаление сотрудника.");
-
+                // Не проверяем наличие отдельным вызовом: при недоступном Парсеке
+                // CheckGuidePresent вернул бы false, и удаление было бы ложно
+                // помечено успешным. Отсутствие человека распознаём по ответу DeletePerson.
                 using var integServ = ParsecClient.Create();
                 var res = integServ.DeletePerson(ClientState.SessionID, new Guid(row.ID_CARD));
                 Logger.Log<ParsecService>("Error", $"1358 РЕЗУЛЬТАТ УДАЛЕНИЯ {JsonConvert.SerializeObject(res)}");
@@ -271,7 +263,7 @@ namespace ParsecIntegrationClient.Services
                     return OperationResult.Ok("Пользователь успешно удален");
                 }
 
-                if (res.ErrorMessage != null && res.ErrorMessage.Contains("Could not delete person. There is no person with id"))
+                if (IsNotFound(res.ErrorMessage))
                 {
                     var descForThis = "1311 удаление человека произошло успешно. Человека не было в Парсек";
                     Logger.Log<ParsecService>("Info", descForThis);
@@ -321,6 +313,14 @@ namespace ParsecIntegrationClient.Services
                     PARENT_ID = new Guid(model.GUID_PARENT),
                     DESC = ""
                 };
+
+                if (CheckGuidePresent(org.ID))
+                {
+                    var desc = $"564 Организация {org.NAME} (GUID {org.ID}) уже существует в Parsec";
+                    Logger.Log<ParsecService>("Warning", desc);
+                    // Идемпотентность повторной доставки: организация уже создана.
+                    return OperationResult.Warn(desc, desc);
+                }
 
                 var result = integServ.CreateOrgUnit(ClientState.SessionID, org);
                 if (result.Result != ClientState.Result_Success)
@@ -418,13 +418,22 @@ namespace ParsecIntegrationClient.Services
 
             try
             {
+                var orgId = new Guid(row.ID_CARD);
+
                 using var integServ = ParsecClient.Create();
 
                 Logger.Log<ParsecService>("Warning", $"584 Удаление организации | {row.ID_CARD}");
 
-                var res = integServ.DeleteOrgUnit(ClientState.SessionID, new Guid(row.ID_CARD));
+                var res = integServ.DeleteOrgUnit(ClientState.SessionID, orgId);
                 if (res.Result != ClientState.Result_Success)
                 {
+                    if (IsNotFound(res.ErrorMessage))
+                    {
+                        Logger.Log<ParsecService>("Warning",
+                            $"584 Организация {orgId} отсутствует в Parsec, удаление не требуется");
+                        return OperationResult.Ok("Организация отсутствует в Parsec, удаление не требуется");
+                    }
+
                     Logger.Log<ParsecService>("Error", $"1642 {res.ErrorMessage}");
                     return OperationResult.Error($"1473 Ошибка при удалении организации: {res.ErrorMessage}", res.ErrorMessage, 22);
                 }
@@ -457,7 +466,6 @@ namespace ParsecIntegrationClient.Services
                         const int code = 23;
                         var errorDesc = $"621 КОД ОШИБКИ: {code}. GUID_PEP null or empty для контакта ID={row.ID_PEP}";
                         Logger.Log<ParsecService>("Warning", errorDesc);
-                        DatabaseService.IncrementAttemp(row);
                         return OperationResult.Error(errorDesc,
                             $"Ошибка БД: поле GUID_PEP не заполнено для контакта ID={row.ID_PEP}", code);
                     }
@@ -477,7 +485,6 @@ namespace ParsecIntegrationClient.Services
                         const int code = 25;
                         var errorDesc = $"674 КОД ОШИБКИ: {code}. Пользователь с GUID: {model.GUID_PEP} не найден в parsec.";
                         Logger.Log<ParsecService>("Warning", errorDesc);
-                        DatabaseService.IncrementAttemp(row);
                         return OperationResult.Error(errorDesc,
                             $"Ошибка Parsec: пользователь с GUID {model.GUID_PEP} не найден", code);
                     }
@@ -487,22 +494,24 @@ namespace ParsecIntegrationClient.Services
                     if (res.Result != ClientState.Result_Success)
                     {
                         Logger.Log<ParsecService>("Error", $"642 Ошибка открытия сессии для редактирования пользователя. {res.ErrorMessage}");
-                        DatabaseService.IncrementAttemp(row);
                         return OperationResult.Error($"Ошибка открытия сессии: {res.ErrorMessage}", res.ErrorMessage, 7);
                     }
 
                     try
                     {
-                        var creatingItem = new BaseIdentifier();
-                        creatingItem.IS_PRIMARY = true;
-                        creatingItem.CODE = hexValue;
-                        creatingItem.PERSON_ID = new Guid(model.GUID_PEP);
+                        var creatingItem = BuildCardIdentifier(row, hexValue, model.GUID_PEP);
 
                         var resAddPersonIdentifier = integServ.AddPersonIdentifier(res.Value, creatingItem);
                         if (resAddPersonIdentifier.Result != ClientState.Result_Success)
                         {
+                            if (IsAlreadyExists(resAddPersonIdentifier.ErrorMessage))
+                            {
+                                Logger.Log<ParsecService>("Warning",
+                                    $"659 Карта {row.ID_CARD} уже есть в Parsec, повторное добавление не требуется");
+                                return OperationResult.Ok("Карта уже добавлена в Parsec");
+                            }
+
                             Logger.Log<ParsecService>("Error", $"659 Ошибка при добавлении карты пользователю. Ошибка: {resAddPersonIdentifier.ErrorMessage}");
-                            DatabaseService.IncrementAttemp(row);
                             return OperationResult.Error(
                                 $"Ошибка при добавлении карты: {resAddPersonIdentifier.ErrorMessage}",
                                 resAddPersonIdentifier.ErrorMessage, 24);
@@ -523,13 +532,11 @@ namespace ParsecIntegrationClient.Services
                 const int noDataCode = 25;
                 var errorNoData = $"1847 КОД ОШИБКИ: {noDataCode}. Не найден пользователь с ID_PEP = {row.ID_PEP}";
                 Logger.Log<ParsecService>("Warning", errorNoData);
-                DatabaseService.IncrementAttemp(row);
                 return OperationResult.Error(errorNoData, $"В БД не найден контакт с ID={row.ID_PEP}", noDataCode);
             }
             catch (Exception ex)
             {
                 Logger.Log<ParsecService>("Warning", $"724 Ошибка в AddCardPeople: {ex.Message}");
-                DatabaseService.IncrementAttemp(row);
                 return OperationResult.Error($"724 Ошибка в AddCardPeople: {ex.Message}", ex.Message, 9);
             }
         }
@@ -547,8 +554,14 @@ namespace ParsecIntegrationClient.Services
                 var res = integServ.DeleteIdentifier(ClientState.SessionID, hexValue);
                 if (res.Result != ClientState.Result_Success)
                 {
+                    if (IsNotFound(res.ErrorMessage))
+                    {
+                        Logger.Log<ParsecService>("Warning",
+                            $"726 Карта {row.ID_CARD} отсутствует в Parsec, удаление не требуется");
+                        return OperationResult.Ok("Карта отсутствует в Parsec, удаление не требуется");
+                    }
+
                     Logger.Log<ParsecService>("Error", $"726 {res.ErrorMessage}");
-                    DatabaseService.IncrementAttemp(row);
                     return OperationResult.Error($"Ошибка при удалении карты: {res.ErrorMessage}", res.ErrorMessage, 26);
                 }
 
@@ -558,7 +571,6 @@ namespace ParsecIntegrationClient.Services
             catch (Exception ex)
             {
                 Logger.Log<ParsecService>("Warning", $"754 Ошибка в RemoveCardPeople: {ex.Message}");
-                DatabaseService.IncrementAttemp(row);
                 return OperationResult.Error($"754 Ошибка в RemoveCardPeople: {ex.Message}", ex.Message, 26);
             }
         }
@@ -659,6 +671,46 @@ namespace ParsecIntegrationClient.Services
             Logger.Log<ParsecService>("Debug", $"869 Query: {query}");
 
             return query;
+        }
+
+        /// <summary>
+        /// Формирует идентификатор карты для AddPersonIdentifier. Если у карты в базе Артонит
+        /// заполнен срок действия (CARD.TIMESTART/CARD.TIMEEND), возвращается IdentifierTemp
+        /// с VALID_FROM/VALID_TO; если срока нет — прежний BaseIdentifier, чтобы не передавать
+        /// в Парсек нулевые даты (01.01.0001).
+        /// </summary>
+        private static BaseIdentifier BuildCardIdentifier(DbModelRowIDInDev row, string hexValue, string personGuid)
+        {
+            DateTime? validFrom;
+            DateTime? validTo;
+
+            if (DatabaseService.TryGetCardPeriod(row.ID_CARD, out validFrom, out validTo))
+            {
+                Logger.Log<ParsecService>("Info",
+                    $"Срок действия карты {row.ID_CARD}: VALID_FROM={validFrom.Value:dd.MM.yyyy HH:mm:ss}, VALID_TO={validTo.Value:dd.MM.yyyy HH:mm:ss}");
+
+                return new IdentifierTemp
+                {
+                    IS_PRIMARY = true,
+                    CODE = hexValue,
+                    PERSON_ID = new Guid(personGuid),
+                    // 0 — идентификатор подсистемы доступа «Parsec» (обычная карта),
+                    // 1 — автомобильный номер; карте всегда соответствует 0.
+                    IDENTIFTYPE = 0,
+                    VALID_FROM = validFrom.Value,
+                    VALID_TO = validTo.Value
+                };
+            }
+
+            Logger.Log<ParsecService>("Warning",
+                $"Срок действия карты {row.ID_CARD} не найден в базе Артонит, идентификатор добавляется без VALID_FROM/VALID_TO");
+
+            return new BaseIdentifier
+            {
+                IS_PRIMARY = true,
+                CODE = hexValue,
+                PERSON_ID = new Guid(personGuid)
+            };
         }
 
         private static OperationResult ProcessAccessCatAddition(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)
@@ -963,6 +1015,42 @@ namespace ParsecIntegrationClient.Services
             {
                 Logger.Log<ParsecService>("Warning", $"Ошибка при закрытии сессии организации {sessionId}: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Повторная доставка события после сбоя связи: объект уже создан в Парсеке.
+        /// Это не ошибка интеграции, иначе очередь встанет навсегда.
+        /// </summary>
+        private static bool IsAlreadyExists(string message)
+        {
+            return ContainsAny(message,
+                "already exists", "already exist", "duplicate", "уже существует", "уже создан");
+        }
+
+        /// <summary>Объект уже удалён/никогда не создавался — удаление считать успешным.</summary>
+        private static bool IsNotFound(string message)
+        {
+            return ContainsAny(message,
+                "not found", "no person", "no identifier", "no org", "no such",
+                "не найден", "отсутств");
+        }
+
+        private static bool ContainsAny(string text, params string[] fragments)
+        {
+            if (string.IsNullOrWhiteSpace(text) || fragments == null)
+            {
+                return false;
+            }
+
+            foreach (string fragment in fragments)
+            {
+                if (text.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Microsoft.Extensions.Configuration;
 
 namespace ParsecIntegrationClient.Options
@@ -100,6 +100,12 @@ namespace ParsecIntegrationClient.Options
 
         /// <summary>Коды ошибок, при которых задание удаляется из очереди.</summary>
         public List<int> SkipErrCode { get; set; } = new List<int>();
+
+        /// <summary>Сколько строк PARSEC_QUEUE читать за один проход (по умолчанию 100).</summary>
+        public int QueueBatchSize { get; set; } = 100;
+
+        /// <summary>Аренда строки в работе, минуты: защита от вечного статуса 1 после падения службы.</summary>
+        public int QueueLeaseMinutes { get; set; } = 15;
     }
 }
 

@@ -1,4 +1,4 @@
-﻿bin/
+bin/
 obj/
 publish/
 *.user
@@ -6,3 +6,5 @@ publish/
 .vs/
 Output/
 .tools/
+backup/
+runtime-data/

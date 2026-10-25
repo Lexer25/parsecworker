@@ -1,0 +1,8 @@
+Техническое задание
+В команду case "9": return ParsecService.AddCardPeople(row);
+При выполнении команды case "9": return ParsecService.AddCardPeople(row); в свойства карты надо добавить параметры DateTime VALID_FROM и DateTime VALID_TO.
+Для этого в методе public static OperationResult AddCardPeople(DbModelRowIDInDev row)  надо сделать доработки:
+1. По известному row.ID_CARD извлечь из таблицы timestart  и timeend  с помощью запроса select c.timestart, c.timeend from  card c where c.id_card=' row.ID_CARD '
+2. Вместо var creatingItem = new BaseIdentifier() использовать var creatingItem = new IdentifierTemp(); См. C:\ParsecIntegrationClinet_worker\ParsecIntegrationClient\ParsecIntegrationDescription_20230113.pdf
+3. Дополнить поля DateTime VALID_FROM и DateTime VALID_TO.
+В результате этих доработок добавляемый идентификатор получит параметры DateTime VALID_FROM и DateTime VALID_TO, которых раньше не было.

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -75,6 +75,8 @@ namespace ParsecIntegrationClient
             TimeSpan interval = TimeSpan.FromSeconds(Math.Max(1, SettingsService.DatabaseJobTimeout));
             TimeSpan retry = TimeSpan.FromSeconds(Math.Max(5, _options.Parsec.SessionRetrySeconds));
             TimeSpan databaseRetry = TimeSpan.FromSeconds(Math.Max(5, _options.Service.DatabaseRetrySeconds));
+            TimeSpan errorRetry = TimeSpan.FromMinutes(Math.Max(1, SettingsService.ErrorTimeoutMinutes));
+            bool queueRecovered = false;
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -98,18 +100,66 @@ namespace ParsecIntegrationClient
                     continue;
                 }
 
+                if (!queueRecovered)
+                {
+                    try
+                    {
+                        int recovered = DatabaseService.RecoverStaleQueueRows();
+                        queueRecovered = true;
+
+                        if (recovered > 0)
+                        {
+                            _logger.LogWarning(
+                                "Восстановлено зависших строк PARSEC_QUEUE: {Count}", recovered);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogCritical(ex,
+                            "Не удалось проверить очередь PARSEC_QUEUE. Убедитесь, что скрипты db\\01..03 применены к базе. Повтор через {Seconds} с.",
+                            (int)databaseRetry.TotalSeconds);
+                        await Delay(databaseRetry, stoppingToken);
+                        continue;
+                    }
+                }
+
+                QueueRunResult queueResult = null;
+
                 try
                 {
-                    new QueueProcessor().RunOnce();
+                    queueResult = new QueueProcessor().RunOnce();
                 }
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "Ошибка обработки очереди заданий");
+                    queueResult = new QueueRunResult
+                    {
+                        Failed = true,
+                        Error = ex.Message
+                    };
                 }
 
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
+                }
+
+                if (queueResult != null && queueResult.Failed)
+                {
+                    _logger.LogWarning(
+                        "Обработка остановлена на задаче {Id}: {Error}. Повтор через {Minutes} мин.",
+                        queueResult.FailedId,
+                        queueResult.Error,
+                        (int)errorRetry.TotalMinutes);
+
+                    await Delay(errorRetry, stoppingToken);
+                    continue;
+                }
+
+                if (queueResult != null && queueResult.Processed > 0)
+                {
+                    // Очередь ещё не пуста — сразу следующий батч, без ожидания интервала.
+                    continue;
                 }
 
                 _logger.LogInformation(

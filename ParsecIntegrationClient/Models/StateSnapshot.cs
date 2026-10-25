@@ -57,6 +57,33 @@ namespace ParsecIntegrationClient.Models
             };
         }
 
+        /// <summary>Снимок по результату операции над строкой PARSEC_QUEUE.</summary>
+        public static StateSnapshot From(DbModelQueueRow row, OperationResult result)
+        {
+            if (row == null) throw new ArgumentNullException(nameof(row));
+            if (result == null) throw new ArgumentNullException(nameof(result));
+
+            var now = DateTime.Now;
+            string operationCode = row.OPERATION.ToString();
+
+            return new StateSnapshot
+            {
+                IdCardindev = row.ID.ToString(),
+                Operation = StateService.GetOperationName(operationCode),
+                OperationCode = operationCode,
+                Attempts = row.ATTEMPTS.ToString(),
+                Timestamp = now,
+                KeyNum = Key.keyNumber,
+                Status = result.Status,
+                Description = result.Description,
+                ErrorMessage = result.ErrorMessage,
+                ErrorCode = result.ErrorCode,
+                NextStart = result.IsError
+                    ? now.AddMinutes(SettingsService.ErrorTimeoutMinutes)
+                    : now
+            };
+        }
+
         /// <summary>Снимок по результату операции над конкретной задачей.</summary>
         public static StateSnapshot From(DbModelRowIDInDev row, OperationResult result)
         {

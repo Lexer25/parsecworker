@@ -27,6 +27,8 @@ if exist "publish" rmdir /s /q "publish"
 dotnet publish "%PROJ%" -c Release --no-restore -o "publish" -v:m
 if errorlevel 1 goto error
 if not exist "publish\ParsecIntegrationClient.exe" goto error
+if exist "db" xcopy /e /i /y "db" "publish\db" >nul
+if errorlevel 1 goto error
 echo.
 
 echo [4/4] installer

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json.Linq;
@@ -36,6 +36,12 @@ namespace ParsecIntegrationClient.Services
         public static int DatabaseJobTimeout = 600;
         public static int ErrorTimeoutMinutes = 1;
         public static List<int> SkipErrCode = new List<int>();
+
+        /// <summary>Размер батча PARSEC_QUEUE за один проход.</summary>
+        public static int QueueBatchSize = 100;
+
+        /// <summary>Аренда строки в работе, минуты.</summary>
+        public static int QueueLeaseMinutes = 15;
 
         // --- настройки Парсека и сессии (раньше были зашиты в коде) ---
         public static string ParsecUrl = "http://127.0.0.1:10101/IntegrationService/IntegrationService.asmx";
@@ -83,6 +89,8 @@ namespace ParsecIntegrationClient.Services
             DatabaseJobTimeout = PickInt(options.Service.JobIntervalSeconds, legacy, "_databaseJobTimeout", 600);
             ErrorTimeoutMinutes = PickInt(options.Service.ErrorTimeoutMinutes, legacy, "_errorTimeoutMinutes", 1);
             SkipErrCode = PickIntList(options.Service.SkipErrCode, legacy, "_skipErrCode");
+            QueueBatchSize = options.Service.QueueBatchSize > 0 ? options.Service.QueueBatchSize : 100;
+            QueueLeaseMinutes = options.Service.QueueLeaseMinutes > 0 ? options.Service.QueueLeaseMinutes : 15;
 
             if (options.Parsec != null)
             {

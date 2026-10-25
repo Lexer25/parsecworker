@@ -1,54 +1,75 @@
-﻿using ParsecIntegrationClient.Models;
+using Newtonsoft.Json;
+using ParsecIntegrationClient.Models;
 using System;
-using System.Linq;
+using System.Diagnostics;
 
 namespace ParsecIntegrationClient.Services
 {
     /// <summary>
-    /// Обработка очереди заданий cardindev. Один проход = один вызов RunOnce().
+    /// Обработка очереди PARSEC_QUEUE. Один проход = один вызов RunOnce().
+    ///
+    /// Очередь обрабатывается строго по id. Если операция завершилась ошибкой,
+    /// проход немедленно прекращается: следующие события не трогаются, пока
+    /// неудачная строка не будет исправлена/исчерпает попытки. Это требование
+    /// интеграции: операции зависят от предыдущих.
+    ///
+    /// Строки не удаляются: status=2/4/5/6 остаются в PARSEC_QUEUE как история,
+    /// детали каждой попытки пишутся в PARSEC_QUEUE_LOG.
     /// </summary>
     public sealed class QueueProcessor
     {
-        public void RunOnce()
+        private const int StatusDone = 2;
+        private const int StatusRetry = 3;
+        private const int StatusDead = 4;
+        private const int StatusSkipped = 5;
+
+        private static readonly string WorkerId = BuildWorkerId();
+
+        public QueueRunResult RunOnce()
         {
-            Logger.Log<QueueProcessor>("Warning", "21 ЗАПУСК ОБРАБОТКИ ЗАДАЧ");
-            Logger.Log<QueueProcessor>("Warning", string.Format("22 ГЛОБАЛЬНЫЙ ТАЙМАУТ {0} секунд", SettingsService.DatabaseJobTimeout));
+            var run = new QueueRunResult();
 
-            var rows = DatabaseService.GetList<DbModelRowIDInDev>(SettingsService.QuerySelectIdDevCardString)
-                .OrderBy(x => Convert.ToInt32(x.ID))
-                .ToArray();
+            Logger.Log<QueueProcessor>("Warning", "21 ЗАПУСК ОБРАБОТКИ ОЧЕРЕДИ PARSEC_QUEUE");
 
-            if (rows.Length == 0)
+            var rows = DatabaseService.GetQueueBatch(SettingsService.QueueBatchSize);
+
+            if (rows.Count == 0)
             {
                 StateService.SaveState(StateSnapshot.Idle());
                 Logger.Log<QueueProcessor>("Warning", "Задач для обработки не найдено");
-                Logger.Log<QueueProcessor>("Warning", string.Format("Ожидание {0} минут перед следующей попыткой", SettingsService.ErrorTimeoutMinutes));
-                return;
+                return run;
             }
 
-            Logger.Log<QueueProcessor>("Warning", string.Format("64 Получено {0} записей для выполнения", rows.Length));
+            Logger.Log<QueueProcessor>("Warning", string.Format("64 Получено {0} записей для выполнения", rows.Count));
 
             int i = 1;
             foreach (var row in rows)
             {
                 Logger.Log<QueueProcessor>("Info", string.Format(
-                    "129 ЗАДАЧА {0}, {1}/{2} Начало обработки cardindev {3}",
-                    row.OPERATION, i, rows.Length, row.ID));
+                    "129 ЗАДАЧА {0}, {1}/{2} Начало обработки PARSEC_QUEUE {3}",
+                    row.OPERATION, i, rows.Count, row.ID));
 
-                var precheck = Precheck(row);
-                if (precheck != null)
+                bool claimed = DatabaseService.TryClaimQueueRow(
+                    row.ID, WorkerId, DateTime.Now.AddMinutes(SettingsService.QueueLeaseMinutes));
+
+                if (!claimed)
                 {
-                    StateService.SaveState(StateSnapshot.From(row, precheck));
+                    // Строку уже забрал другой экземпляр службы. Не перескакиваем через неё:
+                    // порядок важнее пропускной способности.
+                    run.Failed = true;
+                    run.FailedId = row.ID;
+                    run.Error = "строка уже обрабатывается другим экземпляром";
                     Logger.Log<QueueProcessor>("Warning",
-                        string.Format("ГЛОБАЛЬНАЯ ОСТАНОВКА: {0} (задача {1})", precheck.Description, row.ID));
-                    Logger.Log<QueueProcessor>("Warning", string.Format("ГЛОБАЛЬНЫЙ ТАЙМАУТ Следующая попытка через {0} минут", SettingsService.ErrorTimeoutMinutes));
-                    return;
+                        string.Format("Задача {0} уже обрабатывается, проход остановлен", row.ID));
+                    return run;
                 }
 
+                DateTime startedAt = DateTime.Now;
                 OperationResult result;
+
                 try
                 {
-                    result = Execute(row);
+                    result = Precheck(row) ?? Execute(row);
                 }
                 catch (Exception ex)
                 {
@@ -56,94 +77,285 @@ namespace ParsecIntegrationClient.Services
                     result = OperationResult.Error("Необработанное исключение", ex.Message, 9);
                 }
 
+                int durationMs = (int)Math.Max(0, (DateTime.Now - startedAt).TotalMilliseconds);
+                int attemptNo = row.ATTEMPTS + 1;
+
                 if (result == null)
                 {
-                    // Защита от будущих ошибок: фабрики не возвращают null, но Execute может измениться.
-                    Logger.Log<QueueProcessor>("Warning", "ГЛОБАЛЬНАЯ ОСТАНОВКА Обработка прекращена: result is null");
-                    return;
+                    result = OperationResult.Error("Операция не вернула результат", "result is null", 9);
                 }
+
+                if (result.Status == OperationStatus.Ok || result.Status == OperationStatus.Warn)
+                {
+                    DatabaseService.CompleteQueueRow(row.ID, row.ATTEMPTS, durationMs);
+                    DatabaseService.WriteQueueLog(row.ID, attemptNo, startedAt, StatusDone,
+                        result.ErrorCode, result.ErrorMessage, durationMs, WorkerId,
+                        BuildDetails(row, result, attemptNo));
+
+                    StateService.SaveState(StateSnapshot.From(row, result));
+
+                    Logger.Log<QueueProcessor>("Info", string.Format(
+                        "Задача {0} завершена успешно за {1} мс", row.ID, durationMs));
+
+                    run.Processed++;
+                    i++;
+                    continue;
+                }
+
+                if (result.Status == OperationStatus.Skip || IsSkipError(result))
+                {
+                    string reason = string.IsNullOrWhiteSpace(result.Description)
+                        ? "Пропущено"
+                        : result.Description;
+
+                    DatabaseService.SkipQueueRow(row.ID, row.ATTEMPTS, durationMs, reason);
+                    DatabaseService.WriteQueueLog(row.ID, attemptNo, startedAt, StatusSkipped,
+                        result.ErrorCode, reason, durationMs, WorkerId,
+                        BuildDetails(row, result, attemptNo));
+
+                    StateService.SaveState(StateSnapshot.From(row, result));
+
+                    Logger.Log<QueueProcessor>("Warning", string.Format(
+                        "Задача {0} пропущена: {1}", row.ID, reason));
+
+                    run.Processed++;
+                    i++;
+                    continue;
+                }
+
+                if (IsMainSessionError(result))
+                {
+                    // Сессия Парсека истекла/отозвана: без сброса следующие вызовы
+                    // будут падать так же, пока событие не уйдёт в dead letter.
+                    ClientState.ResetSession();
+                    Logger.Log<QueueProcessor>("Warning",
+                        "Сессия Парсека сброшена, следующая попытка потребует повторной авторизации");
+                }
+
+                // Ошибка: инкремент попытки и остановка всего прохода.
+                int attempts = row.ATTEMPTS + 1;
+                int status = attempts >= row.MAX_ATTEMPTS ? StatusDead : StatusRetry;
+
+                DatabaseService.FailQueueRow(row.ID, attempts, status, result.ErrorCode,
+                    result.ErrorMessage, durationMs);
+
+                DatabaseService.WriteQueueLog(row.ID, attemptNo, startedAt, status,
+                    result.ErrorCode, result.ErrorMessage, durationMs, WorkerId,
+                    BuildDetails(row, result, attemptNo));
 
                 StateService.SaveState(StateSnapshot.From(row, result));
 
-                switch (result.Status)
+                run.Failed = true;
+                run.FailedId = row.ID;
+                run.Error = result.ErrorMessage;
+
+                Logger.Log<QueueProcessor>("Warning", string.Format(
+                    "ГЛОБАЛЬНАЯ ОСТАНОВКА: {0} (задача {1}, попытка {2}/{3}, статус {4})",
+                    result.ErrorMessage, row.ID, attempts, row.MAX_ATTEMPTS, status));
+
+                if (status == StatusDead)
                 {
-                    case OperationStatus.Error:
-                        if (SettingsService.SkipErrCode != null && result.ErrorCode.HasValue
-                            && SettingsService.SkipErrCode.Contains(result.ErrorCode.Value))
-                        {
-                            Logger.Log<QueueProcessor>("Info", string.Format(
-                                "ErrorCode ({0}) в SkipErrCode: задача {1} удалена автоматически.", result.ErrorCode, row.ID));
-                            DatabaseService.DeleteIdInDevById(row.ID);
-                        }
-                        else
-                        {
-                            DatabaseService.IncrementAttemp(row);
-                            Logger.Log<QueueProcessor>("Warning", "ГЛОБАЛЬНАЯ ОСТАНОВКА Обработка прекращена: " + result.ErrorMessage);
-                            Logger.Log<QueueProcessor>("Warning", string.Format("ГЛОБАЛЬНЫЙ ТАЙМАУТ Следующая попытка через {0} минут", SettingsService.ErrorTimeoutMinutes));
-                            return;
-                        }
-                        break;
-
-                    case OperationStatus.Ok:
-                    case OperationStatus.Skip:
-                    case OperationStatus.Warn:
-                        Logger.Log<QueueProcessor>("Info", string.Format("Задача {0} завершена со статусом {1}, удаление", row.ID, result.Status));
-                        DatabaseService.DeleteIdInDevById(row.ID);
-                        break;
-
-                    default:
-                        // None — не должно случаться для результата операции.
-                        Logger.Log<QueueProcessor>("Warning", string.Format("Задача {0}: неожиданный статус {1}", row.ID, result.Status));
-                        break;
+                    Logger.Log<QueueProcessor>("Warning", string.Format(
+                        "Задача {0}: попытки исчерпаны, событие осталось в истории со статусом 4 (dead letter)", row.ID));
+                }
+                else
+                {
+                    Logger.Log<QueueProcessor>("Warning", string.Format(
+                        "Следующая попытка через {0} минут", SettingsService.ErrorTimeoutMinutes));
                 }
 
-                i++;
+                return run;
             }
 
             Logger.Log<QueueProcessor>("Warning", "Все задачи успешно обработаны");
+            return run;
         }
 
-        private static OperationResult Precheck(DbModelRowIDInDev row)
+        private static bool IsSkipError(OperationResult result)
         {
-            int op;
-            if (!int.TryParse(row.OPERATION, out op))
+            return result.ErrorCode.HasValue
+                   && SettingsService.SkipErrCode != null
+                   && SettingsService.SkipErrCode.Contains(result.ErrorCode.Value);
+        }
+
+        private static bool IsMainSessionError(OperationResult result)
+        {
+            string message = result == null ? null : result.ErrorMessage;
+            if (string.IsNullOrWhiteSpace(message))
             {
-                var desc = string.Format("MainJob precheck: некорректный тип операции '{0}' для cardindev={1}", row.OPERATION, row.ID);
-                var errorMessage = string.Format("Ошибка валидации: некорректный код операции '{0}'", row.OPERATION);
-                Logger.Log<QueueProcessor>("Error", desc);
-                return OperationResult.Error(desc, errorMessage, 30);
+                return false;
             }
 
-            if ((op == 4 || op == 6) && !Guid.TryParse(row.ID_CARD, out _))
+            // Ошибки сессии редактирования (код 7) — не повод переавторизовывать службу.
+            if (message.IndexOf("редактирования", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                var desc = string.Format("MainJob precheck: для операции {0} ожидается GUID в ID_CARD, получено '{1}' (cardindev={2})", op, row.ID_CARD, row.ID);
-                var errorMessage = string.Format("Ошибка валидации: для операции {0} ожидается GUID в поле ID_CARD, получено '{1}'", op, row.ID_CARD);
-                Logger.Log<QueueProcessor>("Error", desc);
-                return OperationResult.Error(desc, errorMessage, 31);
+                return false;
+            }
+
+            string[] fragments =
+            {
+                "session not found", "no session", "invalid session", "session is not valid",
+                "not authorized", "authentication failed", "unauthorized",
+                "сессия не найдена", "не авторизован"
+            };
+
+            foreach (string fragment in fragments)
+            {
+                if (message.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static OperationResult Precheck(DbModelQueueRow row)
+        {
+            string idCard = row.ID_CARD == null ? null : row.ID_CARD.Trim();
+
+            switch (row.OPERATION)
+            {
+                case 3:
+                case 35:
+                case 7:
+                case 8:
+                case 9:
+                    if (!row.ID_PEP.HasValue)
+                    {
+                        return PrecheckError(row, "для операции " + row.OPERATION + " не заполнен ID_PEP", 30);
+                    }
+                    break;
+            }
+
+            switch (row.OPERATION)
+            {
+                case 4:
+                case 6:
+                    if (!Guid.TryParse(idCard, out _))
+                    {
+                        // Удалять в Парсеке нечего: объекта с таким идентификатором там быть не может.
+                        // Это особенно важно для тестовых данных с GUID вида TEST-ORG-...
+                        string reason = "ID_CARD '" + row.ID_CARD + "' не является GUID: объекта в Parsec нет";
+                        Logger.Log<QueueProcessor>("Warning", "Precheck: " + reason);
+                        return OperationResult.Skip(reason);
+                    }
+                    break;
+            }
+
+            switch (row.OPERATION)
+            {
+                case 5:
+                case 55:
+                    if (!Guid.TryParse(idCard, out _))
+                    {
+                        return PrecheckError(row,
+                            "для операции " + row.OPERATION + " ожидается GUID в ID_CARD, получено '" + row.ID_CARD + "'",
+                            31);
+                    }
+                    break;
+            }
+
+            switch (row.OPERATION)
+            {
+                case 7:
+                case 8:
+                    if (!int.TryParse(idCard, out _))
+                    {
+                        return PrecheckError(row,
+                            "для операции " + row.OPERATION + " ожидается числовой ID_ACCESSNAME в ID_CARD, получено '"
+                            + row.ID_CARD + "'", 33);
+                    }
+                    break;
+            }
+
+            switch (row.OPERATION)
+            {
+                case 9:
+                case 10:
+                    if (string.IsNullOrWhiteSpace(idCard))
+                    {
+                        return PrecheckError(row, "для операции " + row.OPERATION + " не заполнен ID_CARD", 32);
+                    }
+
+                    if (!long.TryParse(idCard, out _))
+                    {
+                        return PrecheckError(row,
+                            "для операции " + row.OPERATION + " ожидается числовой код карты в ID_CARD, получено '"
+                            + row.ID_CARD + "'", 34);
+                    }
+                    break;
             }
 
             return null;
         }
 
-        private static OperationResult Execute(DbModelRowIDInDev row)
+        private static OperationResult PrecheckError(DbModelQueueRow row, string message, int code)
         {
+            string desc = string.Format("Precheck: {0} (PARSEC_QUEUE={1})", message, row.ID);
+            Logger.Log<QueueProcessor>("Error", desc);
+            return OperationResult.Error(desc, "Ошибка валидации: " + message, code);
+        }
+
+        private static OperationResult Execute(DbModelQueueRow row)
+        {
+            DbModelRowIDInDev legacy = row.ToLegacyRow();
+
             switch (row.OPERATION)
             {
-                case "3": return ParsecService.AddPeople(row);
-                case "35": return ParsecService.SavePerson(row);
-                case "4": return ParsecService.RemovePeople(row);
-                case "5": return ParsecService.AddOrg(row);
-                case "55": return ParsecService.SaveOrgUnit(row);
-                case "6": return ParsecService.RemoveOrg(row);
-                case "7": return ParsecService.AddAccGroupPeople(row);
-                case "8": return ParsecService.RemoveIdentifierPeople(row);
-                case "9": return ParsecService.AddCardPeople(row);
-                case "10": return ParsecService.RemoveCardPeople(row);
-                case "1":
-                case "2":
+                case 3: return ParsecService.AddPeople(legacy);
+                case 35: return ParsecService.SavePerson(legacy);
+                case 4: return ParsecService.RemovePeople(legacy);
+                case 5: return ParsecService.AddOrg(legacy);
+                case 55: return ParsecService.SaveOrgUnit(legacy);
+                case 6: return ParsecService.RemoveOrg(legacy);
+                case 7: return ParsecService.AddAccGroupPeople(legacy);
+                case 8: return ParsecService.RemoveIdentifierPeople(legacy);
+                case 9: return ParsecService.AddCardPeople(legacy);
+                case 10: return ParsecService.RemoveCardPeople(legacy);
+                case 1:
+                case 2:
                     return OperationResult.Skip("Команда не реализована");
                 default:
                     return OperationResult.Skip(string.Format("Неизвестная операция '{0}'", row.OPERATION));
+            }
+        }
+
+        private static string BuildDetails(DbModelQueueRow row, OperationResult result, int attemptNo)
+        {
+            try
+            {
+                var details = new
+                {
+                    operation = row.OPERATION,
+                    id_pep = row.ID_PEP,
+                    id_card = row.ID_CARD,
+                    attempt = attemptNo,
+                    status = result.Status.ToString(),
+                    description = result.Description,
+                    error = result.ErrorMessage,
+                    error_code = result.ErrorCode,
+                    worker = WorkerId
+                };
+
+                return JsonConvert.SerializeObject(details);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string BuildWorkerId()
+        {
+            try
+            {
+                return Environment.MachineName + ":" + Process.GetCurrentProcess().Id + ":"
+                       + DateTime.Now.ToString("yyyyMMddHHmmss");
+            }
+            catch
+            {
+                return "worker:" + DateTime.Now.ToString("yyyyMMddHHmmss");
             }
         }
     }
