@@ -1,0 +1,35 @@
+Техническое задание № Изменение свойств идентификатора.
+Необходимо зафиксировать и передать в Парсек изменения свойств идентификатора:
+1. Если изменился TIMESTART, то Обновить параметры идентификатора VALID_FROM = validFrom.Value.
+если TIMESTART null, то и VALID_FROM null
+2. если изменился TIMEEND, то Обновить параметры идентификатора VALID_TO = validTo.Value.
+если TIMEEND null, то и VALID_to null
+3. если ACTIVE изменился с 1 на 0, то IdentifierExData - > int ENTRY_LIMIT = 0 (доступ запрещен)
+4. если ACTIVE изменился с 0 на 1, то IdentifierExData - > int ENTRY_LIMIT = -1 (минус один), Без ограничения количества проходов.
+
+
+5. если ID_CARDTYPE изменился с 1 на любой другой, то удалить идентификатор у персоны
+6 если ID_CARDTYPE изменился с любого другого на 1, то добавить идентификатор персоне
+
+
+Главное правило простое: тип объекта в SOAP определяется наличием TIMEEND, а не TIMESTART.
+
+Таблица выбора
+TIMESTART	TIMEEND	Что вызывать	VALID_FROM	VALID_TO	Смысл
+дата	дата	IdentifierTemp	TIMESTART	TIMEEND	обычный срок
+NULL	дата	IdentifierTemp	текущая дата 00:00:00	TIMEEND
+дата	NULL	IdentifierTemp дата	9999-12-31	канонический «без ограничений»
+NULL	NULL	Identifier без дат	---	---	без ограничений
+Если TIMESTART > TIMEEND — это некорректный интервал; останавливать работу интегратора, выводить сообщение об ошибке.
+
+Как выбирать Add или Change
+идентификатор уже есть > ChangePersonIdentifier;
+идентификатора нет > AddPersonIdentifier;
+ID_CARDTYPE <> 1 > DeleteIdentifier;
+ACTIVE > отдельно SetIdentifierExtraData: 1 > ENTRY_LIMIT = -1, 0 > ENTRY_LIMIT = 0.
+
+
+
+
+
+
