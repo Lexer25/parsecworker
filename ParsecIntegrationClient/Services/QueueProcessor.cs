@@ -221,6 +221,7 @@ namespace ParsecIntegrationClient.Services
                 case 7:
                 case 8:
                 case 9:
+                case 11:
                     if (!row.ID_PEP.HasValue)
                     {
                         return PrecheckError(row, "для операции " + row.OPERATION + " не заполнен ID_PEP", 30);
@@ -273,6 +274,7 @@ namespace ParsecIntegrationClient.Services
             {
                 case 9:
                 case 10:
+                case 11:
                     if (string.IsNullOrWhiteSpace(idCard))
                     {
                         return PrecheckError(row, "для операции " + row.OPERATION + " не заполнен ID_CARD", 32);
@@ -313,6 +315,7 @@ namespace ParsecIntegrationClient.Services
                 case 8: return ParsecService.RemoveIdentifierPeople(legacy);
                 case 9: return ParsecService.AddCardPeople(legacy);
                 case 10: return ParsecService.RemoveCardPeople(legacy);
+                case 11: return ParsecService.SyncCardIdentifier(legacy);
                 case 1:
                 case 2:
                     return OperationResult.Skip("Команда не реализована");

@@ -459,6 +459,22 @@ namespace ParsecIntegrationClient.Services
 
                 var list = DatabaseService.GetList<DbModelAddCard>(query);
 
+                // Срок действия, тип карты и ACTIVE берутся из базы СКУД, а не из строки
+                // очереди: между постановкой события и его обработкой карту могли изменить.
+                DatabaseService.TryGetCardState(row.ID_CARD, out DbModelCardState card);
+
+                if (card == null)
+                {
+                    Logger.Log<ParsecService>("Warning",
+                        $"Срок действия карты {row.ID_CARD} не найден в базе Артонит: идентификатор добавляется без VALID_FROM/VALID_TO и без ENTRY_LIMIT");
+                }
+                else if (card.ID_CARDTYPE.HasValue && card.ID_CARDTYPE.Value != 1)
+                {
+                    var reason = $"Карта {row.ID_CARD} имеет ID_CARDTYPE={card.ID_CARDTYPE}, в Парсек передаются только карты типа 1: добавлять нечего";
+                    Logger.Log<ParsecService>("Warning", reason);
+                    return OperationResult.Skip(reason);
+                }
+
                 foreach (var model in list)
                 {
                     if (model.GUID_PEP == null || model.GUID_PEP == string.Empty)
@@ -497,9 +513,11 @@ namespace ParsecIntegrationClient.Services
                         return OperationResult.Error($"Ошибка открытия сессии: {res.ErrorMessage}", res.ErrorMessage, 7);
                     }
 
+                    string addOutcome;
+
                     try
                     {
-                        var creatingItem = BuildCardIdentifier(row, hexValue, model.GUID_PEP);
+                        var creatingItem = BuildCardIdentifier(card, hexValue, new Guid(model.GUID_PEP));
 
                         var resAddPersonIdentifier = integServ.AddPersonIdentifier(res.Value, creatingItem);
                         if (resAddPersonIdentifier.Result != ClientState.Result_Success)
@@ -508,31 +526,50 @@ namespace ParsecIntegrationClient.Services
                             {
                                 Logger.Log<ParsecService>("Warning",
                                     $"659 Карта {row.ID_CARD} уже есть в Parsec, повторное добавление не требуется");
-                                return OperationResult.Ok("Карта уже добавлена в Parsec");
+                                addOutcome = "Карта уже есть в Parsec, повторное добавление не требуется";
                             }
-
-                            Logger.Log<ParsecService>("Error", $"659 Ошибка при добавлении карты пользователю. Ошибка: {resAddPersonIdentifier.ErrorMessage}");
-                            return OperationResult.Error(
-                                $"Ошибка при добавлении карты: {resAddPersonIdentifier.ErrorMessage}",
-                                resAddPersonIdentifier.ErrorMessage, 24);
+                            else
+                            {
+                                Logger.Log<ParsecService>("Error", $"659 Ошибка при добавлении карты пользователю. Ошибка: {resAddPersonIdentifier.ErrorMessage}");
+                                return OperationResult.Error(
+                                    $"Ошибка при добавлении карты: {resAddPersonIdentifier.ErrorMessage}",
+                                    resAddPersonIdentifier.ErrorMessage, 24);
+                            }
                         }
+                        else
+                        {
+                            Logger.Log<ParsecService>("Warning", $"665 Карта успешно добавлена | " +
+                                $"code: {row.ID_CARD} (hex: {hexValue}) " +
+                                $"Пользователю ФИО (parsec): {person.FIRST_NAME} {person.MIDDLE_NAME} {person.LAST_NAME}");
 
-                        Logger.Log<ParsecService>("Warning", $"665 Карта успешно добавлена | " +
-                            $"code: {row.ID_CARD} (hex: {hexValue}) " +
-                            $"Пользователю ФИО (parsec): {person.FIRST_NAME} {person.MIDDLE_NAME} {person.LAST_NAME}");
-
-                        return OperationResult.Ok("Карта успешно добавлена");
+                            addOutcome = "Карта успешно добавлена";
+                        }
                     }
                     finally
                     {
                         CloseEditingSession(integServ, res.Value);
                     }
+
+                    // Лимит проходов — отдельный вызов вне сессии редактирования (п. 3-4 ТЗ):
+                    // карта, созданная сразу с ACTIVE = 0, не должна остаться активной.
+                    var limitResult = ApplyEntryLimit(integServ, hexValue, card == null ? (int?)null : card.ACTIVE);
+                    if (limitResult.Status == OperationStatus.Error)
+                    {
+                        return limitResult;
+                    }
+
+                    return OperationResult.Ok(JoinMessages(addOutcome, limitResult.Description));
                 }
 
                 const int noDataCode = 25;
                 var errorNoData = $"1847 КОД ОШИБКИ: {noDataCode}. Не найден пользователь с ID_PEP = {row.ID_PEP}";
                 Logger.Log<ParsecService>("Warning", errorNoData);
                 return OperationResult.Error(errorNoData, $"В БД не найден контакт с ID={row.ID_PEP}", noDataCode);
+            }
+            catch (InvalidCardPeriodException ex)
+            {
+                Logger.Log<ParsecService>("Error", $"724 Некорректный срок действия карты: {ex.Message}");
+                return OperationResult.Error(ex.Message, ex.Message, InvalidCardPeriodCode);
             }
             catch (Exception ex)
             {
@@ -573,6 +610,189 @@ namespace ParsecIntegrationClient.Services
                 Logger.Log<ParsecService>("Warning", $"754 Ошибка в RemoveCardPeople: {ex.Message}");
                 return OperationResult.Error($"754 Ошибка в RemoveCardPeople: {ex.Message}", ex.Message, 26);
             }
+        }
+
+        /// <summary>
+        /// Операция 11. Изменение свойств идентификатора: привести идентификатор карты
+        /// в Парсеке к текущему состоянию карты в базе Артонит — срок действия
+        /// (VALID_FROM/VALID_TO), наличие идентификатора и лимит проходов по ACTIVE.
+        ///
+        /// Порядок по ТЗ 4.3: ID_CARDTYPE &lt;&gt; 1 → идентификатор удаляется; иначе
+        /// идентификатора нет → AddPersonIdentifier, идентификатор есть →
+        /// ChangePersonIdentifier; ACTIVE — отдельным вызовом SetIdentifierExtraData.
+        /// </summary>
+        public static OperationResult SyncCardIdentifier(DbModelRowIDInDev row)
+        {
+            Logger.Log<ParsecService>("Info", $"Старт изменения свойств идентификатора карты {row.ID_CARD} (операция 11)");
+
+            try
+            {
+                if (!DatabaseService.TryGetCardState(row.ID_CARD, out DbModelCardState card))
+                {
+                    var reason = $"Карта {row.ID_CARD} не найдена в базе Артонит: изменять свойства идентификатора не нужно";
+                    Logger.Log<ParsecService>("Warning", reason);
+                    return OperationResult.Skip(reason);
+                }
+
+                long cardNumber;
+                if (!long.TryParse(card.ID_CARD, out cardNumber))
+                {
+                    var errorDesc = $"КОД ОШИБКИ: 34. ID_CARD '{card.ID_CARD}' не является числовым кодом карты: hex-код для Парсека построить нельзя";
+                    Logger.Log<ParsecService>("Error", errorDesc);
+                    return OperationResult.Error(errorDesc, $"Ошибка БД: ID_CARD '{card.ID_CARD}' не является числом", 34);
+                }
+
+                string hexValue = cardNumber.ToString("X8");
+
+                if (!card.IsAccessCard)
+                {
+                    // П. 5 ТЗ: карта перестала быть картой доступа — идентификатор не нужен.
+                    Logger.Log<ParsecService>("Warning",
+                        $"Карта {card.ID_CARD} имеет ID_CARDTYPE={card.ID_CARDTYPE}: идентификатор удаляется из Парсека");
+
+                    using var deleteClient = ParsecClient.Create();
+                    return DeleteCardIdentifierIfExists(deleteClient, hexValue, card.ID_CARD, 26);
+                }
+
+                if (string.IsNullOrWhiteSpace(card.GUID_PEP))
+                {
+                    const int code = 23;
+                    var errorDesc = $"КОД ОШИБКИ: {code}. GUID_PEP не заполнен для человека ID={card.ID_PEP} карты {card.ID_CARD}";
+                    Logger.Log<ParsecService>("Warning", errorDesc);
+                    return OperationResult.Error(errorDesc,
+                        $"Ошибка БД: поле GUID_PEP не заполнено для контакта ID={card.ID_PEP}", code);
+                }
+
+                Guid personId;
+                if (!Guid.TryParse(card.GUID_PEP, out personId))
+                {
+                    const int code = 23;
+                    var errorDesc = $"КОД ОШИБКИ: {code}. GUID_PEP '{card.GUID_PEP}' человека ID={card.ID_PEP} не является GUID";
+                    Logger.Log<ParsecService>("Warning", errorDesc);
+                    return OperationResult.Error(errorDesc,
+                        $"Ошибка БД: GUID_PEP '{card.GUID_PEP}' не является GUID", code);
+                }
+
+                using var integServ = ParsecClient.Create();
+
+                var person = integServ.GetPerson(ClientState.SessionID, personId);
+                if (person == null)
+                {
+                    const int code = 25;
+                    var errorDesc = $"КОД ОШИБКИ: {code}. Пользователь с GUID {personId} не найден в Парсеке: свойства идентификатора карты {card.ID_CARD} изменить нельзя";
+                    Logger.Log<ParsecService>("Warning", errorDesc);
+                    return OperationResult.Error(errorDesc,
+                        $"Ошибка Parsec: пользователь с GUID {personId} не найден", code);
+                }
+
+                var existing = FindIdentifier(integServ, personId, hexValue);
+
+                var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, personId);
+                if (sessionResult.Result != ClientState.Result_Success)
+                {
+                    Logger.Log<ParsecService>("Error", $"Ошибка открытия сессии для редактирования пользователя. {sessionResult.ErrorMessage}");
+                    return OperationResult.Error($"Ошибка открытия сессии: {sessionResult.ErrorMessage}", sessionResult.ErrorMessage, 7);
+                }
+
+                OperationResult identifierResult;
+
+                try
+                {
+                    identifierResult = SyncIdentifier(integServ, sessionResult.Value, card, existing, hexValue, personId);
+                }
+                finally
+                {
+                    CloseEditingSession(integServ, sessionResult.Value);
+                }
+
+                if (identifierResult.Status == OperationStatus.Error)
+                {
+                    return identifierResult;
+                }
+
+                // Лимит проходов — отдельный вызов вне сессии редактирования (п. 3-4 ТЗ).
+                var limitResult = ApplyEntryLimit(integServ, hexValue, card.ACTIVE);
+                if (limitResult.Status == OperationStatus.Error)
+                {
+                    return limitResult;
+                }
+
+                return OperationResult.Ok(JoinMessages(identifierResult.Description, limitResult.Description));
+            }
+            catch (InvalidCardPeriodException ex)
+            {
+                Logger.Log<ParsecService>("Error", $"Некорректный срок действия карты: {ex.Message}");
+                return OperationResult.Error(ex.Message, ex.Message, InvalidCardPeriodCode);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log<ParsecService>("Warning", $"Ошибка в SyncCardIdentifier: {ex.Message}");
+                return OperationResult.Error($"Ошибка в SyncCardIdentifier: {ex.Message}", ex.Message, 9);
+            }
+        }
+
+        /// <summary>
+        /// Приводит свойства идентификатора карты в открытой сессии редактирования:
+        /// Change, если идентификатор уже есть, Add, если его нет (ТЗ 4.3, «Как выбирать
+        /// Add или Change»). Если срок действия уже совпадает с базой, Change не
+        /// вызывается: смена ACTIVE не должна перезаписывать идентификатор.
+        /// </summary>
+        private static OperationResult SyncIdentifier(IntegrationServiceSoapClient integServ, Guid editSessionId,
+            DbModelCardState card, Identifier existing, string hexValue, Guid personId)
+        {
+            bool hasPeriod = TryResolveCardPeriod(card, out DateTime validFrom, out DateTime validTo);
+
+            if (existing == null)
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"Идентификатор {hexValue} у человека {personId} в Парсеке отсутствует: добавляется");
+
+                var creatingItem = BuildCardIdentifier(card, hexValue, personId);
+                var addResult = integServ.AddPersonIdentifier(editSessionId, creatingItem);
+
+                if (addResult.Result != ClientState.Result_Success && !IsAlreadyExists(addResult.ErrorMessage))
+                {
+                    Logger.Log<ParsecService>("Error", $"Ошибка добавления идентификатора {hexValue}: {addResult.ErrorMessage}");
+                    return OperationResult.Error(
+                        $"Ошибка добавления идентификатора {hexValue}: {addResult.ErrorMessage}",
+                        addResult.ErrorMessage, 24);
+                }
+
+                if (!hasPeriod)
+                {
+                    return OperationResult.Ok($"Идентификатор {hexValue} добавлен без VALID_FROM/VALID_TO");
+                }
+
+                return OperationResult.Ok(
+                    $"Идентификатор {hexValue} добавлен: VALID_FROM={validFrom:dd.MM.yyyy HH:mm:ss}, VALID_TO={validTo:dd.MM.yyyy HH:mm:ss}");
+            }
+
+            if (IsPeriodEqual(existing, hasPeriod, validFrom, validTo))
+            {
+                Logger.Log<ParsecService>("Info", $"Срок действия идентификатора {hexValue} уже соответствует базе Артонит");
+                return OperationResult.Ok($"Срок действия идентификатора {hexValue} не изменился");
+            }
+
+            Logger.Log<ParsecService>("Info", $"Свойства идентификатора {hexValue} в Парсеке изменяются");
+
+            var changingItem = BuildCardIdentifierForChange(card, existing);
+            var changeResult = integServ.ChangePersonIdentifier(editSessionId, changingItem);
+
+            if (changeResult.Result != ClientState.Result_Success)
+            {
+                Logger.Log<ParsecService>("Error", $"Ошибка изменения свойств идентификатора {hexValue}: {changeResult.ErrorMessage}");
+                return OperationResult.Error(
+                    $"Ошибка изменения свойств идентификатора {hexValue}: {changeResult.ErrorMessage}",
+                    changeResult.ErrorMessage, 24);
+            }
+
+            if (!hasPeriod)
+            {
+                return OperationResult.Ok($"У идентификатора {hexValue} снят срок действия (Identifier без дат)");
+            }
+
+            return OperationResult.Ok(
+                $"Идентификатор {hexValue} изменён: VALID_FROM={validFrom:dd.MM.yyyy HH:mm:ss}, VALID_TO={validTo:dd.MM.yyyy HH:mm:ss}");
         }
 
         // ==================== Вспомогательное (CheckAccessGroups, сессии, Process*, Build*) ====================
@@ -674,43 +894,298 @@ namespace ParsecIntegrationClient.Services
         }
 
         /// <summary>
-        /// Формирует идентификатор карты для AddPersonIdentifier. Если у карты в базе Артонит
-        /// заполнен срок действия (CARD.TIMESTART/CARD.TIMEEND), возвращается IdentifierTemp
-        /// с VALID_FROM/VALID_TO; если срока нет — прежний BaseIdentifier, чтобы не передавать
-        /// в Парсек нулевые даты (01.01.0001).
+        /// Конец канонического срока «без ограничений»: карта с TIMESTART и без TIMEEND
+        /// действует до 9999-12-31 включительно (ТЗ 4.3, таблица выбора).
         /// </summary>
-        private static BaseIdentifier BuildCardIdentifier(DbModelRowIDInDev row, string hexValue, string personGuid)
+        private static readonly DateTime MaxCardPeriodEnd = new DateTime(9999, 12, 31, 23, 59, 59);
+
+        /// <summary>Код ошибки «некорректный срок действия карты» (TIMESTART больше TIMEEND).</summary>
+        private const int InvalidCardPeriodCode = 27;
+
+        /// <summary>Код ошибки «не удалось установить ENTRY_LIMIT» (IdentifierExData).</summary>
+        private const int EntryLimitErrorCode = 28;
+
+        /// <summary>
+        /// Срок действия карты по таблице выбора ТЗ 4.3:
+        /// (TIMESTART, TIMEEND) → как есть;
+        /// (NULL, TIMEEND) → с текущих суток 00:00:00;
+        /// (TIMESTART, NULL) → до 9999-12-31 23:59:59 («без ограничений»);
+        /// (NULL, NULL) → срока нет, возвращается false.
+        /// Если в базе заданы оба значения и TIMESTART &gt; TIMEEND — интервал
+        /// некорректен: бросается InvalidCardPeriodException, обработка останавливается.
+        /// </summary>
+        private static bool TryResolveCardPeriod(DbModelCardState card, out DateTime validFrom, out DateTime validTo)
         {
-            DateTime? validFrom;
-            DateTime? validTo;
+            validFrom = default(DateTime);
+            validTo = default(DateTime);
 
-            if (DatabaseService.TryGetCardPeriod(row.ID_CARD, out validFrom, out validTo))
+            bool hasStart = card.TIME_START.HasValue;
+            bool hasEnd = card.TIME_END.HasValue;
+
+            if (!hasStart && !hasEnd)
             {
-                Logger.Log<ParsecService>("Info",
-                    $"Срок действия карты {row.ID_CARD}: VALID_FROM={validFrom.Value:dd.MM.yyyy HH:mm:ss}, VALID_TO={validTo.Value:dd.MM.yyyy HH:mm:ss}");
+                return false;
+            }
 
-                return new IdentifierTemp
+            // Проверяются только значения из базы. Подставленные вместо NULL даты
+            // (текущие сутки, 9999-12-31) не сравниваются: просроченная карта — это
+            // нормальное состояние, а не ошибка данных.
+            if (hasStart && hasEnd && card.TIME_START.Value > card.TIME_END.Value)
+            {
+                throw new InvalidCardPeriodException(
+                    $"Некорректный срок действия карты {card.ID_CARD}: TIMESTART={card.TIME_START.Value:dd.MM.yyyy HH:mm:ss} " +
+                    $"больше TIMEEND={card.TIME_END.Value:dd.MM.yyyy HH:mm:ss}. " +
+                    "Интегратор остановлен: исправьте срок действия карты в СКУД Артонит");
+            }
+
+            validFrom = hasStart ? card.TIME_START.Value : DateTime.Today;
+            validTo = hasEnd ? card.TIME_END.Value : MaxCardPeriodEnd;
+
+            if (!hasStart)
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"У карты {card.ID_CARD} не задан TIMESTART: VALID_FROM = {validFrom:dd.MM.yyyy} 00:00:00");
+            }
+
+            if (!hasEnd)
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"У карты {card.ID_CARD} не задан TIMEEND: VALID_TO = {validTo:dd.MM.yyyy HH:mm:ss} (без ограничений)");
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Формирует идентификатор для AddPersonIdentifier по таблице выбора ТЗ 4.3:
+        /// тип объекта в SOAP определяется наличием срока действия, а не TIMESTART.
+        /// Срок задан хотя бы частично → IdentifierTemp с VALID_FROM/VALID_TO,
+        /// срока нет совсем → BaseIdentifier без дат (иначе в Парсек уйдут нулевые даты).
+        /// </summary>
+        private static BaseIdentifier BuildCardIdentifier(DbModelCardState card, string hexValue, Guid personId)
+        {
+            if (card == null)
+            {
+                return new BaseIdentifier
                 {
                     IS_PRIMARY = true,
                     CODE = hexValue,
-                    PERSON_ID = new Guid(personGuid),
-                    // 0 — идентификатор подсистемы доступа «Parsec» (обычная карта),
-                    // 1 — автомобильный номер; карте всегда соответствует 0.
-                    IDENTIFTYPE = 0,
-                    VALID_FROM = validFrom.Value,
-                    VALID_TO = validTo.Value
+                    PERSON_ID = personId
                 };
             }
 
-            Logger.Log<ParsecService>("Warning",
-                $"Срок действия карты {row.ID_CARD} не найден в базе Артонит, идентификатор добавляется без VALID_FROM/VALID_TO");
+            if (!TryResolveCardPeriod(card, out DateTime validFrom, out DateTime validTo))
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"У карты {card.ID_CARD} срок действия не задан (TIMESTART и TIMEEND пусты): идентификатор добавляется как Identifier без дат");
 
-            return new BaseIdentifier
+                return new BaseIdentifier
+                {
+                    IS_PRIMARY = true,
+                    CODE = hexValue,
+                    PERSON_ID = personId
+                };
+            }
+
+            Logger.Log<ParsecService>("Info",
+                $"Срок действия карты {card.ID_CARD}: VALID_FROM={validFrom:dd.MM.yyyy HH:mm:ss}, VALID_TO={validTo:dd.MM.yyyy HH:mm:ss}");
+
+            return new IdentifierTemp
             {
                 IS_PRIMARY = true,
                 CODE = hexValue,
-                PERSON_ID = new Guid(personGuid)
+                PERSON_ID = personId,
+                // 0 — идентификатор подсистемы доступа «Parsec» (обычная карта),
+                // 1 — автомобильный номер; карте всегда соответствует 0.
+                IDENTIFTYPE = 0,
+                VALID_FROM = validFrom,
+                VALID_TO = validTo
             };
+        }
+
+        /// <summary>
+        /// Идентификатор для ChangePersonIdentifier. Change заменяет объект целиком,
+        /// поэтому группа доступа, маска привилегий, тип идентификатора и имя берутся
+        /// из текущего состояния в Парсеке: иначе они обнулятся.
+        /// </summary>
+        private static Identifier BuildCardIdentifierForChange(DbModelCardState card, Identifier existing)
+        {
+            if (!TryResolveCardPeriod(card, out DateTime validFrom, out DateTime validTo))
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"У карты {card.ID_CARD} срок действия не задан: у идентификатора {existing.CODE} снимаются VALID_FROM/VALID_TO");
+
+                return new Identifier
+                {
+                    CODE = existing.CODE,
+                    PERSON_ID = existing.PERSON_ID,
+                    IS_PRIMARY = existing.IS_PRIMARY,
+                    ACCGROUP_ID = existing.ACCGROUP_ID,
+                    PRIVILEGE_MASK = existing.PRIVILEGE_MASK,
+                    IDENTIFTYPE = existing.IDENTIFTYPE,
+                    NAME = existing.NAME
+                };
+            }
+
+            return new IdentifierTemp
+            {
+                CODE = existing.CODE,
+                PERSON_ID = existing.PERSON_ID,
+                IS_PRIMARY = existing.IS_PRIMARY,
+                ACCGROUP_ID = existing.ACCGROUP_ID,
+                PRIVILEGE_MASK = existing.PRIVILEGE_MASK,
+                IDENTIFTYPE = existing.IDENTIFTYPE,
+                NAME = existing.NAME,
+                VALID_FROM = validFrom,
+                VALID_TO = validTo
+            };
+        }
+
+        /// <summary>
+        /// Сравнение срока действия в Парсеке с базой Артонит. Firebird TIMESTAMP и
+        /// Parsec dateTime — локальное время без пересчёта в UTC, поэтому значения
+        /// сравниваются как есть, с допуском 1 секунда.
+        /// </summary>
+        private static bool IsPeriodEqual(Identifier existing, bool hasPeriod, DateTime validFrom, DateTime validTo)
+        {
+            if (!hasPeriod)
+            {
+                // В базе срока нет: подходит только идентификатор без дат.
+                return !(existing is IdentifierTemp);
+            }
+
+            var current = existing as IdentifierTemp;
+            if (current == null)
+            {
+                return false;
+            }
+
+            return Math.Abs((current.VALID_FROM - validFrom).TotalSeconds) < 1
+                   && Math.Abs((current.VALID_TO - validTo).TotalSeconds) < 1;
+        }
+
+        /// <summary>Ищет идентификатор карты у человека по hex-коду (без учёта регистра).</summary>
+        private static Identifier FindIdentifier(IntegrationServiceSoapClient integServ, Guid personId, string hexValue)
+        {
+            var identifiers = integServ.GetPersonIdentifiers(ClientState.SessionID, personId);
+            if (identifiers == null)
+            {
+                return null;
+            }
+
+            foreach (var identifier in identifiers)
+            {
+                if (identifier == null || identifier.CODE == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(identifier.CODE.Trim(), hexValue, StringComparison.OrdinalIgnoreCase))
+                {
+                    return identifier;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// ACTIVE → IdentifierExData.ENTRY_LIMIT (ТЗ 4.3, п. 3-4): больше нуля — -1
+        /// (без ограничения количества проходов), ноль — 0 (доступ запрещён).
+        /// Вызывается отдельно от Add/Change. Остальные поля IdentifierExData
+        /// (роль прохода, владелец) не теряются: они читаются и возвращаются как есть.
+        /// Если ACTIVE не задан, лимит не меняется — в журнал пишется предупреждение.
+        /// </summary>
+        private static OperationResult ApplyEntryLimit(IntegrationServiceSoapClient integServ, string hexValue, int? active)
+        {
+            if (!active.HasValue)
+            {
+                var warn = $"ACTIVE карты для идентификатора {hexValue} не задан: ENTRY_LIMIT не меняется";
+                Logger.Log<ParsecService>("Warning", warn);
+                return OperationResult.Warn(warn, warn);
+            }
+
+            int entryLimit = active.Value > 0 ? -1 : 0;
+
+            var exData = integServ.GetIdentifierExtraData(ClientState.SessionID, hexValue);
+            if (exData == null)
+            {
+                Logger.Log<ParsecService>("Warning",
+                    $"Для идентификатора {hexValue} нет IdentifierExData: создаётся с ENTRY_LIMIT={entryLimit}");
+                exData = new IdentifierExData();
+            }
+            else if (exData.ENTRY_LIMIT == entryLimit)
+            {
+                var same = $"ENTRY_LIMIT идентификатора {hexValue} уже равен {entryLimit} (ACTIVE={active.Value})";
+                Logger.Log<ParsecService>("Info", same);
+                return OperationResult.Ok(same);
+            }
+
+            int previous = exData.ENTRY_LIMIT;
+            exData.ENTRY_LIMIT = entryLimit;
+
+            var result = integServ.SetIdentifierExtraData(ClientState.SessionID, hexValue, exData);
+            if (result.Result != ClientState.Result_Success)
+            {
+                Logger.Log<ParsecService>("Error",
+                    $"Ошибка установки ENTRY_LIMIT={entryLimit} для идентификатора {hexValue}: {result.ErrorMessage}");
+                return OperationResult.Error(
+                    $"Ошибка установки ENTRY_LIMIT={entryLimit} для идентификатора {hexValue}: {result.ErrorMessage}",
+                    result.ErrorMessage, EntryLimitErrorCode);
+            }
+
+            var done = $"ENTRY_LIMIT идентификатора {hexValue}: {previous} → {entryLimit} (ACTIVE={active.Value})";
+            Logger.Log<ParsecService>("Warning", done);
+            return OperationResult.Ok(done);
+        }
+
+        /// <summary>
+        /// Удаляет идентификатор карты из Парсека. Отсутствие идентификатора ошибкой не
+        /// считается: повторная доставка события не должна останавливать очередь.
+        /// </summary>
+        private static OperationResult DeleteCardIdentifierIfExists(IntegrationServiceSoapClient integServ,
+            string hexValue, string idCard, int errorCode)
+        {
+            var result = integServ.DeleteIdentifier(ClientState.SessionID, hexValue);
+
+            if (result.Result == ClientState.Result_Success)
+            {
+                Logger.Log<ParsecService>("Warning", $"Идентификатор карты {idCard} (hex: {hexValue}) удалён из Парсека");
+                return OperationResult.Ok($"Идентификатор карты {idCard} удалён из Парсека");
+            }
+
+            if (IsNotFound(result.ErrorMessage))
+            {
+                Logger.Log<ParsecService>("Warning", $"Идентификатор карты {idCard} в Парсеке отсутствует, удаление не требуется");
+                return OperationResult.Ok($"Идентификатор карты {idCard} в Парсеке отсутствует, удаление не требуется");
+            }
+
+            Logger.Log<ParsecService>("Error", $"Ошибка удаления идентификатора {hexValue}: {result.ErrorMessage}");
+            return OperationResult.Error($"Ошибка удаления идентификатора: {result.ErrorMessage}", result.ErrorMessage, errorCode);
+        }
+
+        /// <summary>Склеивает два пояснения для журнала и очереди, пропуская пустые.</summary>
+        private static string JoinMessages(string first, string second)
+        {
+            if (string.IsNullOrWhiteSpace(first))
+            {
+                return second;
+            }
+
+            if (string.IsNullOrWhiteSpace(second))
+            {
+                return first;
+            }
+
+            return first + ". " + second;
+        }
+
+        /// <summary>Некорректный срок действия карты в базе Артонит (TIMESTART больше TIMEEND).</summary>
+        private sealed class InvalidCardPeriodException : Exception
+        {
+            public InvalidCardPeriodException(string message) : base(message)
+            {
+            }
         }
 
         private static OperationResult ProcessAccessCatAddition(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)

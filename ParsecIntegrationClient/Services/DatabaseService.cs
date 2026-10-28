@@ -123,26 +123,29 @@ namespace ParsecIntegrationClient.Services
         }
 
         /// <summary>
-        /// Читает срок действия карты из таблицы CARD базы СКУД Артонит:
-        /// <c>select c.timestart, c.timeend from card c where c.id_card='...'</c>.
-        /// Нужен для того, чтобы при добавлении карты человеку передать в Парсек
-        /// IdentifierTemp.VALID_FROM и VALID_TO.
-        /// Возвращает true, только если карта найдена и обе даты заполнены;
-        /// при любой ошибке (нет карты, NULL в датах, сбой БД) — false, даты null.
+        /// Читает состояние карты из базы СКУД Артонит (CARD + PEOPLE.GUID): срок
+        /// действия, тип карты, ACTIVE и GUID человека в Парсеке.
+        /// Нужно и для добавления идентификатора (операция 9), и для изменения его
+        /// свойств (операция 11): тип объекта в SOAP выбирается по TIMEEND, а лимит
+        /// проходов — по ACTIVE.
+        /// Возвращает false, только если карты нет в базе (или сбой чтения).
+        /// NULL в TIMESTART/TIMEEND — нормальное значение «срок не задан», карта при
+        /// этом найдена.
         /// </summary>
-        public static bool TryGetCardPeriod(string idCard, out DateTime? validFrom, out DateTime? validTo)
+        public static bool TryGetCardState(string idCard, out DbModelCardState state)
         {
-            validFrom = null;
-            validTo = null;
+            state = null;
 
             if (string.IsNullOrWhiteSpace(idCard))
             {
-                Logger.Log<DatabaseService>("Warning", "TryGetCardPeriod: не задан ID_CARD, срок действия карты не читается");
+                Logger.Log<DatabaseService>("Warning", "TryGetCardState: не задан ID_CARD, состояние карты не читается");
                 return false;
             }
 
-            var query = $"select c.timestart, c.timeend from card c where c.id_card='{idCard.Replace("'", "''")}'";
-            Logger.Log<DatabaseService>("Debug", $"TryGetCardPeriod: {query}");
+            var query = "select c.id_card, c.id_pep, p.guid, c.id_cardtype, c.timestart, c.timeend, c.\"ACTIVE\" " +
+                        "from card c left join people p on p.id_pep = c.id_pep " +
+                        $"where c.id_card='{idCard.Replace("'", "''")}'";
+            Logger.Log<DatabaseService>("Debug", $"TryGetCardState: {query}");
 
             try
             {
@@ -157,30 +160,34 @@ namespace ParsecIntegrationClient.Services
                     {
                         if (!dr.Read())
                         {
-                            Logger.Log<DatabaseService>("Warning", $"TryGetCardPeriod: карта {idCard} не найдена в таблице CARD");
+                            Logger.Log<DatabaseService>("Warning", $"TryGetCardState: карта {idCard} не найдена в таблице CARD");
                             return false;
                         }
 
-                        validFrom = ReadCardDate(dr, 0, "timestart", idCard);
-                        validTo = ReadCardDate(dr, 1, "timeend", idCard);
+                        state = new DbModelCardState
+                        {
+                            ID_CARD = Convert.ToString(dr.GetValue(0)),
+                            ID_PEP = ReadIntValue(dr, 1, "id_pep", idCard),
+                            GUID_PEP = dr.IsDBNull(2) ? null : Convert.ToString(dr.GetValue(2)),
+                            ID_CARDTYPE = ReadIntValue(dr, 3, "id_cardtype", idCard),
+                            TIME_START = ReadDateValue(dr, 4, "timestart", idCard),
+                            TIME_END = ReadDateValue(dr, 5, "timeend", idCard),
+                            ACTIVE = ReadIntValue(dr, 6, "ACTIVE", idCard)
+                        };
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Log<DatabaseService>("Exception", $"TryGetCardPeriod: ошибка чтения срока действия карты {idCard}: {ex.Message}");
-                validFrom = null;
-                validTo = null;
+                Logger.Log<DatabaseService>("Exception", $"TryGetCardState: ошибка чтения состояния карты {idCard}: {ex.Message}");
+                state = null;
                 return false;
             }
 
-            if (!validFrom.HasValue || !validTo.HasValue)
-            {
-                Logger.Log<DatabaseService>("Warning",
-                    $"TryGetCardPeriod: у карты {idCard} не заполнен срок действия (CARD.TIMESTART/CARD.TIMEEND), VALID_FROM/VALID_TO не передаются");
-                return false;
-            }
-
+            Logger.Log<DatabaseService>("Info",
+                $"TryGetCardState: карта {state.ID_CARD} ID_PEP={state.ID_PEP} GUID_PEP={state.GUID_PEP} " +
+                $"ID_CARDTYPE={Nullable(state.ID_CARDTYPE)} ACTIVE={Nullable(state.ACTIVE)} " +
+                $"TIMESTART={Nullable(state.TIME_START)} TIMEEND={Nullable(state.TIME_END)}");
             return true;
         }
 
@@ -190,7 +197,7 @@ namespace ParsecIntegrationClient.Services
         /// других типов колонки. TIME (TimeSpan) датой не является: без даты
         /// срок действия карты задать нельзя.
         /// </summary>
-        private static DateTime? ReadCardDate(FbDataReader dr, int index, string columnName, string idCard)
+        private static DateTime? ReadDateValue(FbDataReader dr, int index, string columnName, string idCard)
         {
             if (dr.IsDBNull(index))
             {
@@ -214,8 +221,33 @@ namespace ParsecIntegrationClient.Services
             }
 
             Logger.Log<DatabaseService>("Error",
-                $"TryGetCardPeriod: CARD.{columnName}={value} у карты {idCard} не является датой (тип {value?.GetType().Name})");
+                $"TryGetCardState: CARD.{columnName}={value} у карты {idCard} не является датой (тип {value?.GetType().Name})");
             return null;
+        }
+
+        /// <summary>Целочисленное поле карты (SMALLINT/INTEGER) → int?; NULL остаётся null.</summary>
+        private static int? ReadIntValue(FbDataReader dr, int index, string columnName, string idCard)
+        {
+            if (dr.IsDBNull(index))
+            {
+                return null;
+            }
+
+            try
+            {
+                return Convert.ToInt32(dr.GetValue(index));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log<DatabaseService>("Error",
+                    $"TryGetCardState: CARD.{columnName}={dr.GetValue(index)} у карты {idCard} не является числом: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static string Nullable(object value)
+        {
+            return value == null ? "<null>" : Convert.ToString(value, CultureInfo.InvariantCulture);
         }
 
         /// <summary>

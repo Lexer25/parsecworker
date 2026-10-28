@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using ParsecIntegrationClient.Models;
 using System;
 using System.Collections.Generic;
@@ -25,6 +25,7 @@ namespace ParsecIntegrationClient.Services
             { "8", "Удаление_группы_доступа_у_карты" },
             { "9", "Добавление_карточки" },
             { "10", "Удаление_карточки" },
+            { "11", "Изменение_свойств_карточки" },
             { "35", "Обновление_пользователя" },
             { "55", "Обновление_организации" },
         };
