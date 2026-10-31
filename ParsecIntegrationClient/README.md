@@ -4,7 +4,9 @@
 `IntegrationService`. Приложение — Worker на `Microsoft.Extensions.Hosting`: один exe
 работает и из консоли, и как служба Windows.
 
-Текущая версия — **4.1.0** на **.NET 8** (`net8.0-windows`, win-x64).
+Текущая версия — **4.1.3** на **.NET 8** (`net8.0-windows`, win-x64).
+
+История версий — файл `history.txt` в корне репозитория.
 
 ## Что изменилось в 4.1.0
 

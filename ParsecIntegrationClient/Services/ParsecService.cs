@@ -26,20 +26,23 @@ namespace ParsecIntegrationClient.Services
                 var query = BuildAddAccessCatQuery(row);
                 var model = DatabaseService.Get<DbModelAccessCategoryForPeople>(query);
 
-                if (model == null)
+                // Пустой результат запроса — это не сбой, а отсутствие данных:
+                // пары (сотрудник, категория доступа) в базе Артонит нет, GUID-ов нет,
+                // и добавлять в Parsec нечего. Завершаем штатно (Skip), а не ошибкой.
+                if (!TryReadAccessCategoryTarget(model, out var personGuid, out var accessGroupGuid))
                 {
-                    Logger.Log<ParsecService>("Warning", "114 No models found");
-                    return OperationResult.Error("Модели данных не найдены", "Модели данных не найдены", 1);
+                    string reason = BuildAccessCategoryTargetMissingReason("Добавление категории доступа невозможно", row);
+                    Logger.Log<ParsecService>("Warning", "114 " + reason);
+                    return OperationResult.Skip(reason);
                 }
 
-                Logger.Log<ParsecService>("Info", $"118 Found GUID_ACCGROUP {model.GUID_ACCGROUP} models to process");
+                Logger.Log<ParsecService>("Info", $"118 Найдены GUID: сотрудник {personGuid}, категория доступа {accessGroupGuid}");
 
-                var lastState = ProcessAccessCatAddition(row, model);
+                var lastState = ProcessAccessCatAddition(row, personGuid, accessGroupGuid);
 
                 if (lastState.Status == OperationStatus.Ok)
                 {
                     Logger.Log<ParsecService>("Info", "159 Model processed successfully");
-                    return lastState;
                 }
 
                 return lastState;
@@ -60,15 +63,20 @@ namespace ParsecIntegrationClient.Services
                 var query = BuildRemoveAccessCatQuery(row);
                 var model = DatabaseService.Get<DbModelAccessCategoryForPeople>(query);
 
-                if (model == null)
+                // Пустой результат запроса — это не сбой, а отсутствие данных: пары
+                // (сотрудник, категория доступа) в базе Артонит нет, GUID-ов нет и
+                // удалять в Parsec нечего. Раньше в этом случае код шёл дальше и падал
+                // на new Guid(null) с "Value cannot be null. (Parameter 'g')".
+                if (!TryReadAccessCategoryTarget(model, out var personGuid, out var accessGroupGuid))
                 {
-                    Logger.Log<ParsecService>("Warning", "840 Модель данных не найдена");
-                    return OperationResult.Error("841 Модель данных не найдена", "Модель данных не найдена", 1);
+                    string reason = BuildAccessCategoryTargetMissingReason("Удаление категории доступа не требуется", row);
+                    Logger.Log<ParsecService>("Warning", "840 " + reason);
+                    return OperationResult.Skip(reason);
                 }
 
-                Logger.Log<ParsecService>("Info", $"844 Найден GUID_ACCGROUP {model.GUID_ACCGROUP} для удаления");
+                Logger.Log<ParsecService>("Info", $"844 Найден GUID_ACCGROUP {accessGroupGuid} (GUID_PEP {personGuid}) для удаления");
 
-                return ProcessAccessCatRemoval(row, model);
+                return ProcessAccessCatRemoval(row, personGuid, accessGroupGuid);
             }
             catch (Exception ex)
             {
@@ -293,9 +301,8 @@ namespace ParsecIntegrationClient.Services
 
                 var model = DatabaseService.Get<DbModelAddOrg>(query);
 
-                Logger.Log<ParsecService>("Warning", $"533 Добавление организации | NAME: {model.NAME} DIVCODE: {model.DIVCODE}");
-
-                if (model.NAME == null)
+                // Пустой результат запроса — DatabaseService.Get теперь возвращает null.
+                if (model == null || model.NAME == null)
                 {
                     const int code = 21;
                     var desc = $"541 Организация {row.ID_CARD} не найдена";
@@ -303,6 +310,8 @@ namespace ParsecIntegrationClient.Services
                     Logger.Log<ParsecService>("Error", desc);
                     return OperationResult.Error(desc, errorMessage, code);
                 }
+
+                Logger.Log<ParsecService>("Warning", $"533 Добавление организации | NAME: {model.NAME} DIVCODE: {model.DIVCODE}");
 
                 using var integServ = ParsecClient.Create();
 
@@ -355,9 +364,8 @@ namespace ParsecIntegrationClient.Services
 
                 var model = DatabaseService.Get<DbModelAddOrg>(query);
 
-                Logger.Log<ParsecService>("Warning", $"1997 Обновление организации | NAME: {model.NAME} DIVCODE: {model.DIVCODE}");
-
-                if (model.NAME == null)
+                // Пустой результат запроса — DatabaseService.Get теперь возвращает null.
+                if (model == null || model.NAME == null)
                 {
                     const int code = 21;
                     var desc = $"2003 Организация {row.ID_CARD} для обновления не найдена";
@@ -365,6 +373,8 @@ namespace ParsecIntegrationClient.Services
                     Logger.Log<ParsecService>("Error", desc);
                     return OperationResult.Error(desc, errorMessage, code);
                 }
+
+                Logger.Log<ParsecService>("Warning", $"1997 Обновление организации | NAME: {model.NAME} DIVCODE: {model.DIVCODE}");
 
                 using var integServ = ParsecClient.Create();
 
@@ -894,6 +904,45 @@ namespace ParsecIntegrationClient.Services
         }
 
         /// <summary>
+        /// Проверяет, что запрос операций 7/8 вернул пригодную пару GUID-ов: человека
+        /// (GUID_PEP) и категории доступа (GUID_ACCGROUP).
+        ///
+        /// Проверять ссылку на модель бессмысленно: DatabaseService.Get отдаёт объект
+        /// и при пустом результате, только все поля в нём null. Именно поэтому прежняя
+        /// проверка "model == null" не срабатывала, код шёл дальше и падал на
+        /// new Guid(null) с невнятным "Value cannot be null. (Parameter 'g')".
+        /// </summary>
+        private static bool TryReadAccessCategoryTarget(DbModelAccessCategoryForPeople model,
+            out Guid personGuid, out Guid accessGroupGuid)
+        {
+            personGuid = Guid.Empty;
+            accessGroupGuid = Guid.Empty;
+
+            if (model == null
+                || string.IsNullOrWhiteSpace(model.GUID_PEP)
+                || string.IsNullOrWhiteSpace(model.GUID_ACCGROUP))
+            {
+                return false;
+            }
+
+            return Guid.TryParse(model.GUID_PEP, out personGuid)
+                   && Guid.TryParse(model.GUID_ACCGROUP, out accessGroupGuid);
+        }
+
+        /// <summary>
+        /// Понятное пояснение для случая «в базе нет данных»: что искали, по каким
+        /// ключам не нашли и почему задача закрывается штатно, без ошибки.
+        /// Текст уходит и в журнал, и в PARSEC_QUEUE.error_text (статус 5 «пропущено»).
+        /// </summary>
+        private static string BuildAccessCategoryTargetMissingReason(string actionPrefix, DbModelRowIDInDev row)
+        {
+            return $"{actionPrefix}: в базе СКУД Артонит нет пары " +
+                   $"ID_PEP={row.ID_PEP} и ID_ACCESSNAME={row.ID_CARD} — сотрудник или категория " +
+                   "доступа отсутствуют, либо у них не заполнен GUID. " +
+                   "В Parsec по этим данным обращаться не с чем, задача завершена без ошибки";
+        }
+
+        /// <summary>
         /// Конец канонического срока «без ограничений»: карта с TIMESTART и без TIMEEND
         /// действует до 9999-12-31 включительно (ТЗ 4.3, таблица выбора).
         /// </summary>
@@ -1188,20 +1237,20 @@ namespace ParsecIntegrationClient.Services
             }
         }
 
-        private static OperationResult ProcessAccessCatAddition(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)
+        private static OperationResult ProcessAccessCatAddition(DbModelRowIDInDev row,
+            Guid personGuid, Guid accessGroupGuid)
         {
             using var integServ = ParsecClient.Create();
-            var accessGroupGuid = new Guid(model.GUID_ACCGROUP);
             var accesGroup = GetAccessGroups(accessGroupGuid);
-            var person = integServ.GetPerson(ClientState.SessionID, new Guid(model.GUID_PEP));
+            var person = integServ.GetPerson(ClientState.SessionID, personGuid);
 
             if (person == null)
             {
-                Logger.Log<ParsecService>("Warning", $"291 Пользователь с GUID: {model.GUID_PEP} не найден в Parsec");
+                Logger.Log<ParsecService>("Warning", $"291 Пользователь с GUID: {personGuid} не найден в Parsec");
                 return OperationResult.Ok("292 Пользователь не найден в Parsec");
             }
 
-            var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, new Guid(model.GUID_PEP));
+            var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, personGuid);
             if (sessionResult.Result != ClientState.Result_Success)
             {
                 var errorMsg = $"299 Ошибка открытия сессии редактирования: {sessionResult.ErrorMessage}";
@@ -1213,7 +1262,7 @@ namespace ParsecIntegrationClient.Services
 
             try
             {
-                var identifiers = integServ.GetPersonIdentifiers(ClientState.SessionID, new Guid(model.GUID_PEP));
+                var identifiers = integServ.GetPersonIdentifiers(ClientState.SessionID, personGuid);
                 if (identifiers == null || identifiers.Length == 0)
                 {
                     Logger.Log<ParsecService>("Warning", $"312 У пользователя {person.FIRST_NAME} нет идентификаторов");
@@ -1235,19 +1284,19 @@ namespace ParsecIntegrationClient.Services
             }
         }
 
-        private static OperationResult ProcessAccessCatRemoval(DbModelRowIDInDev row, DbModelAccessCategoryForPeople model)
+        private static OperationResult ProcessAccessCatRemoval(DbModelRowIDInDev row,
+            Guid personGuid, Guid accessGroupGuid)
         {
             using var integServ = ParsecClient.Create();
-            var accessGroupGuid = new Guid(model.GUID_ACCGROUP);
-            var person = integServ.GetPerson(ClientState.SessionID, new Guid(model.GUID_PEP));
+            var person = integServ.GetPerson(ClientState.SessionID, personGuid);
 
             if (person == null)
             {
-                Logger.Log<ParsecService>("Warning", $"885 Пользователь с GUID: {model.GUID_PEP} не найден в Parsec");
+                Logger.Log<ParsecService>("Warning", $"885 Пользователь с GUID: {personGuid} не найден в Parsec");
                 return OperationResult.Ok("886 Пользователь не найден в Parsec, задача удалена");
             }
 
-            var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, new Guid(model.GUID_PEP));
+            var sessionResult = integServ.OpenPersonEditingSession(ClientState.SessionID, personGuid);
             if (sessionResult.Result != ClientState.Result_Success)
             {
                 var errorMsg = $"893 Ошибка открытия сессии редактирования: {sessionResult.ErrorMessage}";
@@ -1259,7 +1308,7 @@ namespace ParsecIntegrationClient.Services
 
             try
             {
-                var identifiers = integServ.GetPersonIdentifiers(ClientState.SessionID, new Guid(model.GUID_PEP));
+                var identifiers = integServ.GetPersonIdentifiers(ClientState.SessionID, personGuid);
                 if (identifiers == null || identifiers.Length == 0)
                 {
                     Logger.Log<ParsecService>("Warning", $"906 У пользователя {person.FIRST_NAME} нет идентификаторов");

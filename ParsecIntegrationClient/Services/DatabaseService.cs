@@ -75,12 +75,20 @@ namespace ParsecIntegrationClient.Services
             return rows;
         }
 
+        /// <summary>
+        /// Одна строка запроса → объект модели. Возвращает null, если строк нет.
+        ///
+        /// Раньше при пустом результате возвращался пустой объект (все поля null),
+        /// поэтому проверки вида "model == null" у вызывающего кода не срабатывали,
+        /// а падение случалось позже и в невнятном месте:
+        /// "Value cannot be null. (Parameter 'g')" на new Guid(null).
+        /// Пустой результат — это не сбой, это отсутствие данных.
+        /// Нули в колонках (NULL) переносятся в поля как null.
+        /// </summary>
         public static T Get<T>(string query)
         {
 
            // Logger.Log<DatabaseService>("Info", $"60 Выполняется запрос к базе данных: {query}");
-
-            var instance = (T) Activator.CreateInstance(typeof(T));
 
             var connectionString = SettingsService.DatabaseConnectionString;
 
@@ -94,15 +102,18 @@ namespace ParsecIntegrationClient.Services
 
                     using (var dr = cmd.ExecuteReader())
                     {
-                        while (dr.Read())
+                        if (dr.Read())
                         {
+                            var instance = (T) Activator.CreateInstance(typeof(T));
+
                             int i = 0;
                             var fields = typeof(T).GetFields(BindingFlags.Instance | BindingFlags.Static |
                                 BindingFlags.NonPublic | BindingFlags.Public);
 
                             foreach (var field in fields)
                             {
-                                field.SetValue(instance, dr.GetValue(i).ToString());
+                                object value = dr.IsDBNull(i) ? null : dr.GetValue(i);
+                                field.SetValue(instance, value == null ? null : value.ToString());
                                 i++;
                             }
 
@@ -110,7 +121,7 @@ namespace ParsecIntegrationClient.Services
                         }
 
                         Logger.Log<DatabaseService>("Warning", $"91 Результат запроса пустой");
-                        return instance;
+                        return default(T);
                     }
                 }
                 catch (Exception ex)
@@ -119,7 +130,7 @@ namespace ParsecIntegrationClient.Services
                 }
             }
 
-            return instance;
+            return default(T);
         }
 
         /// <summary>
