@@ -18,7 +18,7 @@
 |---|---|
 | `01_parsec_queue_ddl.sql` | генераторы, таблицы `PARSEC_QUEUE` и `PARSEC_QUEUE_LOG`, индексы, FK, before-insert триггеры |
 | `02_parsec_enqueue.sql` | процедура `PARSEC_ENQUEUE` — единая точка постановки события, склеивает повторные события по `DEDUP_KEY` |
-| `03_parsec_queue_triggers.sql` | триггеры на `PEOPLE`, `ORGANIZATION`, `CARD`, `SS_ACCESSUSER` |
+| `03_parsec_queue_triggers.sql` | триггеры на `PEOPLE`, `ORGANIZATION`, `CARD`, `SS_ACCESSUSER`; пересоздаются через `drop` + `create`, скрипт можно запускать повторно |
 | `04_backfill_from_cardindev.sql` | разовый перенос незавершённых операций 3..10, 35, 55 из `CARDINDEV` |
 | `05_retention.sql` | удаление завершённых событий старше 12 месяцев |
 | `06_parsec_queue_card_11.sql` | обновление 4.0.0 → 4.1.0: пересоздание триггеров `CARD` (операция 11, смена `ID_CARDTYPE`) |
@@ -37,6 +37,16 @@ isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i 
 isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\02_parsec_enqueue.sql
 isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\03_parsec_queue_triggers.sql
 ```
+
+`03_parsec_queue_triggers.sql` перед каждым `create trigger` удаляет старый триггер,
+поэтому его можно запускать повторно, чтобы обновить все триггеры одним пакетом.
+Firebird 1.5 не поддерживает `drop trigger if exists`: на базе, где триггеров ещё нет,
+`isql` напечатает `Trigger not found`, продолжит выполнение и завершится с кодом 1 —
+это ожидаемо, все триггеры будут созданы; повторный запуск на той же базе проходит без
+ошибок. Не запускайте файл с ключом `isql -b`.
+Скрипт не атомарный (каждый DDL-оператор фиксируется сразу), поэтому перед запуском
+остановите службу: в момент между `drop` и `create` триггер отсутствует, и событие,
+случившееся в это окно, в очередь не попадёт.
 
 Проверка:
 
@@ -78,6 +88,9 @@ select rdb$trigger_name from rdb$triggers
 
 Перед обновлением остановите службу, чтобы события не терялись в момент пересоздания
 триггеров.
+
+Вместо отдельного `06` можно повторно выполнить `03_parsec_queue_triggers.sql`: он
+пересоздаёт все триггеры, включая `PARSEC_Q_CARD_AU` и `PARSEC_Q_CARD_AD`.
 
 ### Кодировка скриптов
 

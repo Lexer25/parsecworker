@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,6 +44,11 @@ namespace ParsecIntegrationClient
                 host.Run();
                 return 0;
             }
+            catch (AlreadyRunningException ex)
+            {
+                ReportAlreadyRunning(ex.Message);
+                return 2;
+            }
             catch (Exception ex)
             {
                 ReportFatal(ex);
@@ -55,6 +60,8 @@ namespace ParsecIntegrationClient
                 {
                     host.Dispose();
                 }
+
+                SingleInstanceGuard.Release();
             }
         }
 
@@ -73,6 +80,14 @@ namespace ParsecIntegrationClient
 
             Paths.Initialize(options);
             SettingsService.Initialize(options);
+
+            // Второй экземпляр не должен даже начинать работу: служба и консоль (или две
+            // копии в разных каталогах) обрабатывали бы одну очередь и дублировали
+            // операции в Парсеке. Мьютекс берётся до создания хоста и держится до выхода.
+            if (!SingleInstanceGuard.TryAcquire(out string busyReason))
+            {
+                throw new AlreadyRunningException(busyReason);
+            }
 
             LogLevel applicationLevel = Logger.ParseLevel(SettingsService.LogLevel);
             LogLevel frameworkLevel = Logger.ParseLevel(options.Log.FrameworkLevel);
@@ -152,6 +167,28 @@ namespace ParsecIntegrationClient
                    category.StartsWith("System", StringComparison.OrdinalIgnoreCase);
         }
 
+        // Второй запуск: приёмников журнала ещё нет, поэтому пишем напрямую в файл и в консоль.
+        private static void ReportAlreadyRunning(string reason)
+        {
+            string message = "Второй экземпляр ParsecIntegrationClient не запущен: " + reason;
+
+            try
+            {
+                LegacyFileLoggerProvider.Append(Paths.LogFolder, "Program", LogLevel.Critical, message, null);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Console.Error.WriteLine(message);
+            }
+            catch
+            {
+            }
+        }
+
         // Ошибка до запуска хоста: приёмников журнала ещё нет, поэтому пишем напрямую в файл и в консоль.
         private static void ReportFatal(Exception ex)
         {
@@ -170,6 +207,18 @@ namespace ParsecIntegrationClient
                 Console.Error.WriteLine(message);
             }
             catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Внутренний сигнал «уже работает другой экземпляр»: отличается от прочих
+        /// ошибок старта тем, что это не сбой, а штатный отказ (код возврата 2).
+        /// </summary>
+        private sealed class AlreadyRunningException : Exception
+        {
+            public AlreadyRunningException(string message)
+                : base(message)
             {
             }
         }

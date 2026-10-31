@@ -10,11 +10,23 @@
 
    CARD changes: 9 = add identifier, 10 = delete identifier, 11 = change
    identifier properties (period, ACTIVE). See db/README.md for the matrix.
+
+   RE-RUN / UPDATE:
+   Firebird 1.5 has neither CREATE OR ALTER TRIGGER nor DROP TRIGGER IF EXISTS,
+   so every trigger is recreated as "drop trigger" + "create trigger". Each drop
+   sits immediately before its create, so the window without the trigger is as
+   short as possible. On the first run the drop of a missing trigger fails with
+   "trigger not found": isql prints the error and continues with the next
+   statement (AUTODDL is on by default, every DDL statement is committed at
+   once). Do not run this file with isql -b. Stop the service before running:
+   between drop and create an event fired in that window is lost.
    ============================================================================ */
 
 set term ^ ;
 
 /* ---------------------------------------------------------------- PEOPLE -- */
+
+drop trigger parsec_q_people_ai^
 
 create trigger parsec_q_people_ai for people active after insert position 100 as
 begin
@@ -22,6 +34,8 @@ begin
     3, new.id_pep, cast(null as varchar(50)),
     'PERSON:3:' || cast(new.id_pep as varchar(20)), 'PEOPLE');
 end^
+
+drop trigger parsec_q_people_au^
 
 create trigger parsec_q_people_au for people active after update position 100 as
 begin
@@ -39,6 +53,8 @@ begin
     end
   end
 end^
+
+drop trigger parsec_q_people_ad^
 
 create trigger parsec_q_people_ad for people active after delete position 100 as
 begin
@@ -61,6 +77,8 @@ end^
 
 /* ---------------------------------------------------------- ORGANIZATION -- */
 
+drop trigger parsec_q_org_ai^
+
 create trigger parsec_q_org_ai for organization active after insert position 100 as
 begin
   if (new.guid is not null and new.guid <> '') then
@@ -70,6 +88,8 @@ begin
       'ORG:5:' || new.guid, 'ORGANIZATION');
   end
 end^
+
+drop trigger parsec_q_org_au^
 
 create trigger parsec_q_org_au for organization active after update position 100 as
 begin
@@ -85,6 +105,8 @@ begin
     end
   end
 end^
+
+drop trigger parsec_q_org_ad^
 
 create trigger parsec_q_org_ad for organization active after delete position 100 as
 begin
@@ -106,6 +128,8 @@ begin
 end^
 
 /* ------------------------------------------------------------------ CARD -- */
+
+drop trigger parsec_q_card_ai^
 
 create trigger parsec_q_card_ai for card active after insert position 100 as
 declare variable v_accessname integer;
@@ -150,6 +174,8 @@ end^
    11        — изменились TIMESTART/TIMEEND/ACTIVE: изменить свойства идентификатора.
    Пока идёт 9 или 11, событие склеивается по DEDUP_KEY, поэтому на одну карту в
    очереди всегда не больше одного незавершённого события каждого вида. */
+drop trigger parsec_q_card_au^
+
 create trigger parsec_q_card_au for card active after update position 100 as
 declare variable v_old_type integer;
 declare variable v_new_type integer;
@@ -236,6 +262,8 @@ begin
   end
 end^
 
+drop trigger parsec_q_card_ad^
+
 create trigger parsec_q_card_ad for card active after delete position 100 as
 begin
   if (old.id_cardtype = 1) then
@@ -262,6 +290,8 @@ begin
 end^
 
 /* -------------------------------------------------- SS_ACCESSUSER (7/8) --- */
+
+drop trigger parsec_q_ssaccess_ai^
 
 create trigger parsec_q_ssaccess_ai for ss_accessuser active after insert position 100 as
 begin
@@ -292,6 +322,15 @@ begin
   end
 end^
 
+/* Удаление SS_ACCESSUSER: сначала отменяем ещё не обработанную выдачу этой же
+   категории (7), затем ставим снятие (8). Проверка PEOPLE обязательна: при
+   удалении человека FK-каскад удаляет SS_ACCESSUSER уже после того, как строка
+   PEOPLE удалена. Без проверки триггер ставил 8 по всем parsec-категориям
+   удалённого человека; служба 4.1.3+ такие события пропускает (статус 5), а
+   более старые падали с "Value cannot be null. (Parameter 'g')" и
+   останавливали очередь. */
+drop trigger parsec_q_ssaccess_ad^
+
 create trigger parsec_q_ssaccess_ad for ss_accessuser active after delete position 100 as
 begin
   if (exists (
@@ -316,17 +355,20 @@ begin
        and operation = 7
        and status in (0, 3);
 
-    if (exists (
-          select c.id_card
-            from card c
-           where c.id_pep = old.id_pep
-             and c.id_cardtype = 1
-             and c."ACTIVE" > 0)) then
+    if (exists (select 1 from people p where p.id_pep = old.id_pep)) then
     begin
-      execute procedure parsec_enqueue(
-        8, old.id_pep, cast(old.id_accessname as varchar(50)),
-        'ACC:8:' || cast(old.id_pep as varchar(20)) || ':' || cast(old.id_accessname as varchar(20)),
-        'SS_ACCESSUSER');
+      if (exists (
+            select c.id_card
+              from card c
+             where c.id_pep = old.id_pep
+               and c.id_cardtype = 1
+               and c."ACTIVE" > 0)) then
+      begin
+        execute procedure parsec_enqueue(
+          8, old.id_pep, cast(old.id_accessname as varchar(50)),
+          'ACC:8:' || cast(old.id_pep as varchar(20)) || ':' || cast(old.id_accessname as varchar(20)),
+          'SS_ACCESSUSER');
+      end
     end
   end
 end^
