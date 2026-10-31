@@ -40,8 +40,8 @@
     <!-- Trimming не включаем: XmlSerializer (SOAP), Firebird и конфигурация используют
          рефлексию, IL-обрезка для них небезопасна. -->
 
-    <Version>4.1.0</Version>
-    <AssemblyVersion>4.1.0</AssemblyVersion>
+    <Version>4.1.1</Version>
+    <AssemblyVersion>4.1.1</AssemblyVersion>
     <FileVersion>4.1.0</FileVersion>
 
     <Product>ParsecIntegrationClient</Product>
