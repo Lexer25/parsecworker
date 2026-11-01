@@ -1,4 +1,4 @@
-﻿; Установщик службы Parsec Integration Client (.NET 8, self-contained single-file).
+; Установщик службы Parsec Integration Client и монитора очереди (.NET 8, self-contained).
 ; Заменяет ClickOnce-публикацию прежней версии (setup.exe + Application Files).
 ; Сборка: build.cmd  ->  Output\ParsecIntegrationSetup_v<версия>.exe
 ; Требуется Inno Setup 6 (ISCC.exe).
@@ -31,10 +31,14 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 CloseApplications=no
 
 [Files]
-; Файлы службы. appsettings.json исключён: при обновлении настройки не перезаписываются.
+; Файлы службы и монитора очереди. appsettings.json исключён: при обновлении настройки не перезаписываются.
 Source: "publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "appsettings.json"
 ; Конфигурация ставится только при первой установке и переживает удаление программы.
 Source: "publish\appsettings.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
+
+[Icons]
+; Монитор очереди запускается отдельно от службы и читает тот же appsettings.json.
+Name: "{group}\Очередь интегратора"; Filename: "{app}\QueueViewer\ParsecQueueViewer.exe"; WorkingDir: "{app}\QueueViewer"; Comment: "Мониторинг очереди PARSEC_QUEUE"
 
 [Code]
 function RunHidden(const FileName, Params: string): Integer;

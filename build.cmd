@@ -5,6 +5,7 @@ setlocal
 cd /d "%~dp0"
 
 set "PROJ=.\ParsecIntegrationClient\ParsecIntegrationClient.csproj"
+set "VIEWER_PROJ=.\ParsecQueueViewer\ParsecQueueViewer.csproj"
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 echo ========================================
@@ -12,17 +13,21 @@ echo    Parsec Integration Client - build
 echo ========================================
 echo.
 
-echo [1/4] restore
+echo [1/5] restore
 dotnet restore "%PROJ%"
 if errorlevel 1 goto error
-echo.
-
-echo [2/4] build Release
-dotnet build "%PROJ%" -c Release --no-restore -v:m
+dotnet restore "%VIEWER_PROJ%"
 if errorlevel 1 goto error
 echo.
 
-echo [3/4] publish to .\publish (win-x64, self-contained, single-file)
+echo [2/5] build Release (service + queue viewer)
+dotnet build "%PROJ%" -c Release --no-restore -v:m
+if errorlevel 1 goto error
+dotnet build "%VIEWER_PROJ%" -c Release --no-restore -v:m
+if errorlevel 1 goto error
+echo.
+
+echo [3/5] publish service to .\publish (win-x64, self-contained, single-file)
 if exist "publish" rmdir /s /q "publish"
 dotnet publish "%PROJ%" -c Release --no-restore -o "publish" -v:m
 if errorlevel 1 goto error
@@ -31,7 +36,13 @@ if exist "db" xcopy /e /i /y "db" "publish\db" >nul
 if errorlevel 1 goto error
 echo.
 
-echo [4/4] installer
+echo [4/5] publish queue viewer to .\publish\QueueViewer
+dotnet publish "%VIEWER_PROJ%" -c Release --no-restore -o "publish\QueueViewer" -v:m
+if errorlevel 1 goto error
+if not exist "publish\QueueViewer\ParsecQueueViewer.exe" goto error
+echo.
+
+echo [5/5] installer
 if not exist "%ISCC%" goto noiscc
 if not exist "ParsecSetup.iss" goto noiss
 "%ISCC%" "ParsecSetup.iss"
@@ -52,6 +63,7 @@ echo.
 echo ========================================
 echo  DONE
 echo  publish\  - service files (ParsecIntegrationClient.exe + appsettings.json)
+echo  publish\QueueViewer\  - queue monitor (ParsecQueueViewer.exe)
 if exist "Output\*.exe" echo  Output\   - installer
 echo ========================================
 pause

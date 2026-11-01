@@ -1,8 +1,12 @@
-﻿Microsoft Visual Studio Solution File, Format Version 12.00
+Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ParsecIntegrationClient", "ParsecIntegrationClient\ParsecIntegrationClient.csproj", "{CB65D712-DC82-49C3-A48D-8F7183FF4AAF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ParsecQueueViewer", "ParsecQueueViewer\ParsecQueueViewer.csproj", "{59B5CEA4-E064-434C-B7DD-690A6CA66473}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ParsecQueueViewer.Win32", "ParsecQueueViewer.Win32\ParsecQueueViewer.Win32.csproj", "{3F69E0BD-CB73-4AE1-B10D-5ADF864D60BD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -14,6 +18,14 @@ Global
 		{CB65D712-DC82-49C3-A48D-8F7183FF4AAF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{CB65D712-DC82-49C3-A48D-8F7183FF4AAF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{CB65D712-DC82-49C3-A48D-8F7183FF4AAF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{59B5CEA4-E064-434C-B7DD-690A6CA66473}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{59B5CEA4-E064-434C-B7DD-690A6CA66473}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{59B5CEA4-E064-434C-B7DD-690A6CA66473}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{59B5CEA4-E064-434C-B7DD-690A6CA66473}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3F69E0BD-CB73-4AE1-B10D-5ADF864D60BD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3F69E0BD-CB73-4AE1-B10D-5ADF864D60BD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3F69E0BD-CB73-4AE1-B10D-5ADF864D60BD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3F69E0BD-CB73-4AE1-B10D-5ADF864D60BD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

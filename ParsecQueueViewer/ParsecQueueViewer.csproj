@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Desktop-монитор очереди PARSEC_QUEUE. Только чтение: приложение не меняет
+    ни очередь, ни базу Артонит и не конкурирует со службой интегратора.
+    Параметры подключения берутся из appsettings.json службы, а не из этого файла.
+  -->
+  <PropertyGroup>
+    <!--
+      Exe, а не WinExe: self-contained WPF-приложение с Windows-subsystem apphost
+      на текущем стенде завершается до входа в managed Main. Консольное окно,
+      которое создаёт Exe, сразу прячется в ConsoleWindowHider (module initializer).
+      Из проводника пользователь видит только обычное окно WPF.
+    -->
+    <OutputType>Exe</OutputType>
+    <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>ParsecQueueViewer</RootNamespace>
+    <AssemblyName>ParsecQueueViewer</AssemblyName>
+
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <!--
+      Все native-библиотеки WPF упаковываются в exe и распаковываются хостом
+      во временный каталог при старте. В поставке остаётся один файл.
+    -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>Parsec Queue Viewer</Product>
+    <AssemblyTitle>Очередь интегратора PARSEC</AssemblyTitle>
+    <Description>Мониторинг очереди команд PARSEC_QUEUE интегратора СКУД Артонит — СКУД Парсек.</Description>
+    <Copyright>Copyright © 2026</Copyright>
+    <Company>Артонит</Company>
+
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FirebirdSql.Data.FirebirdClient" Version="9.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\app.ico" />
+    <Resource Include="Assets\app.ico" />
+    <None Update="README.md" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+</Project>

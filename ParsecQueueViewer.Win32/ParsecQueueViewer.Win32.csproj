@@ -1,0 +1,78 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Win32-вариант монитора очереди. Интерфейс — голый Win32 API
+    (CreateWindowEx/ListView/Edit/Button, без WPF и WinForms).
+    Целевая платформа — .NET Framework 4.8: он входит в Windows 10/11,
+    поэтому в поставку не нужно класть многомегабайтный runtime.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>ParsecQueueViewer.Win32</RootNamespace>
+    <AssemblyName>ParsecQueueViewerWin32</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationIcon>..\ParsecQueueViewer\Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Product>Parsec Queue Viewer Win32</Product>
+    <AssemblyTitle>Очередь интегратора PARSEC (Win32)</AssemblyTitle>
+    <Description>Мониторинг PARSEC_QUEUE через Win32 API и Firebird.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FirebirdSql.Data.FirebirdClient" Version="9.1.1" GeneratePathProperty="true" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.5.4" GeneratePathProperty="true" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="4.5.3" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <!--
+    Всё managed-содержимое, кроме системного .NET Framework, упаковывается
+    внутрь exe. Снаружи остаётся только native fbclient.dll.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgFirebirdSql_Data_FirebirdClient)\lib\net48\FirebirdSql.Data.FirebirdClient.dll">
+      <LogicalName>ParsecQueueViewerWin32.Embedded.FirebirdSql.Data.FirebirdClient.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgSystem_Threading_Tasks_Extensions)\lib\net461\System.Threading.Tasks.Extensions.dll">
+      <LogicalName>ParsecQueueViewerWin32.Embedded.System.Threading.Tasks.Extensions.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgSystem_Runtime_CompilerServices_Unsafe)\lib\net461\System.Runtime.CompilerServices.Unsafe.dll">
+      <LogicalName>ParsecQueueViewerWin32.Embedded.System.Runtime.CompilerServices.Unsafe.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <!--
+    fbclient.dll — native-клиент Firebird. На машине сборки он уже есть
+    в установленном Firebird 1.5/2.5; кладём его рядом с exe.
+  -->
+  <Target Name="CopyFbClient" AfterTargets="Build">
+    <PropertyGroup>
+      <FbClient15>C:\Program Files (x86)\Firebird\Firebird_1_5_6\bin\fbclient.dll</FbClient15>
+      <FbClient25>C:\Program Files (x86)\Firebird\Firebird_2_5\bin\fbclient.dll</FbClient25>
+      <FbClientSrc Condition="Exists('$(FbClient15)')">$(FbClient15)</FbClientSrc>
+      <FbClientSrc Condition="'$(FbClientSrc)' == '' and Exists('$(FbClient25)')">$(FbClient25)</FbClientSrc>
+      <FbClientSrc Condition="'$(FbClientSrc)' == '' and Exists('$(FbClientSource)')">$(FbClientSource)</FbClientSrc>
+    </PropertyGroup>
+    <Copy SourceFiles="$(FbClientSrc)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'$(FbClientSrc)' != ''" />
+    <Warning Text="fbclient.dll не найден; укажите /p:FbClientSource=..."
+             Condition="'$(FbClientSrc)' == ''" />
+  </Target>
+
+</Project>
