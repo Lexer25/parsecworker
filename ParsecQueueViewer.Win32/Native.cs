@@ -24,6 +24,8 @@ namespace ParsecQueueViewer.Win32
         public const int WM_APP = 0x8000;
         public const int WM_REFRESH_DONE = WM_APP + 10;
         public const int WM_HISTORY_DONE = WM_APP + 11;
+        public const int WM_QUEUE_EVENT = WM_APP + 12;
+        public const int WM_QUEUE_STATE = WM_APP + 13;
 
         public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
         public const int WS_CHILD = 0x40000000;

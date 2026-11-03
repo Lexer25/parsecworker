@@ -10,9 +10,15 @@
 
 Есть два варианта монитора:
 
-- WPF-вариант — [ParsecQueueViewer](ParsecQueueViewer), один self-contained exe ≈69 МБ (.NET 8);
+- WPF-вариант — [ParsecQueueViewer](ParsecQueueViewer), один автономный exe ≈72 МБ
+  `ParsecQueueViewerWpf.exe`: .NET 8 и WPF внутри, на другом компьютере ничего
+  доустанавливать не нужно. Обновляется по событию Firebird `PARSEC_QUEUE_CHANGED`
+  (триггер из `db/08_parsec_queue_events.sql`), резервный опрос — только как страховка.
+  Сборка одного файла: `build-wpf.cmd`.
 - Win32-вариант — [ParsecQueueViewer.Win32](ParsecQueueViewer.Win32), один exe ≈1,3 МБ
   плюс внешний `fbclient.dll` ≈348 КБ (Win32 API + .NET Framework 4.8, без WPF/WinForms).
+  Обновляется по событию Firebird `PARSEC_QUEUE_CHANGED` (триггер из
+  `db/08_parsec_queue_events.sql`), резервный опрос — только как страховка.
   Сборка: `build-win32.cmd`.
 
 История версий: [history.txt](history.txt).

@@ -39,7 +39,7 @@ echo.
 echo [4/5] publish queue viewer to .\publish\QueueViewer
 dotnet publish "%VIEWER_PROJ%" -c Release --no-restore -o "publish\QueueViewer" -v:m
 if errorlevel 1 goto error
-if not exist "publish\QueueViewer\ParsecQueueViewer.exe" goto error
+if not exist "publish\QueueViewer\ParsecQueueViewerWpf.exe" goto error
 echo.
 
 echo [5/5] installer
@@ -63,7 +63,7 @@ echo.
 echo ========================================
 echo  DONE
 echo  publish\  - service files (ParsecIntegrationClient.exe + appsettings.json)
-echo  publish\QueueViewer\  - queue monitor (ParsecQueueViewer.exe)
+echo  publish\QueueViewer\  - queue monitor (ParsecQueueViewerWpf.exe)
 if exist "Output\*.exe" echo  Output\   - installer
 echo ========================================
 pause

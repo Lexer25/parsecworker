@@ -17,28 +17,39 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <RootNamespace>ParsecQueueViewer</RootNamespace>
-    <AssemblyName>ParsecQueueViewer</AssemblyName>
+    <!--
+      Wpf в имени exe отличает WPF-монитор от Win32-варианта
+      (ParsecQueueViewerWin32.exe): они могут лежать рядом в одной поставке.
+    -->
+    <AssemblyName>ParsecQueueViewerWpf</AssemblyName>
 
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!--
+      Один автономный exe: .NET 8, WPF и провайдер Firebird упакованы внутрь,
+      .NET на машине пользователя не нужен. Приложение можно переносить на другой
+      компьютер копированием одного файла.
+      Native-части WPF хост распаковывает при старте в %TEMP%\.net (или в каталог
+      из DOTNET_BUNDLE_EXTRACT_BASE_DIR) — без этого single-file WPF не запускается.
+      Провайдер Firebird 9.1.1 работает по управляемому протоколу, поэтому
+      fbclient.dll рядом с exe не нужен.
+    -->
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <!--
-      Все native-библиотеки WPF упаковываются в exe и распаковываются хостом
-      во временный каталог при старте. В поставке остаётся один файл.
-    -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Символы внутри exe: в поставке не остаётся отдельного .pdb. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">embedded</DebugType>
 
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <Product>Parsec Queue Viewer</Product>
-    <AssemblyTitle>Очередь интегратора PARSEC</AssemblyTitle>
-    <Description>Мониторинг очереди команд PARSEC_QUEUE интегратора СКУД Артонит — СКУД Парсек.</Description>
+    <Version>1.1.2</Version>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
+    <FileVersion>1.1.2.0</FileVersion>
+    <Product>Parsec Queue Viewer WPF</Product>
+    <AssemblyTitle>Очередь интегратора PARSEC (WPF)</AssemblyTitle>
+    <Description>Мониторинг PARSEC_QUEUE по событию Firebird PARSEC_QUEUE_CHANGED и резервному опросу.</Description>
     <Copyright>Copyright © 2026</Copyright>
     <Company>Артонит</Company>
 

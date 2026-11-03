@@ -38,7 +38,7 @@ Source: "publish\appsettings.json"; DestDir: "{app}"; Flags: onlyifdoesntexist u
 
 [Icons]
 ; Монитор очереди запускается отдельно от службы и читает тот же appsettings.json.
-Name: "{group}\Очередь интегратора"; Filename: "{app}\QueueViewer\ParsecQueueViewer.exe"; WorkingDir: "{app}\QueueViewer"; Comment: "Мониторинг очереди PARSEC_QUEUE"
+Name: "{group}\Очередь интегратора"; Filename: "{app}\QueueViewer\ParsecQueueViewerWpf.exe"; WorkingDir: "{app}\QueueViewer"; Comment: "Мониторинг очереди PARSEC_QUEUE"
 
 [Code]
 function RunHidden(const FileName, Params: string): Integer;

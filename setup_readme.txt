@@ -31,10 +31,26 @@
     isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\01_parsec_queue_ddl.sql
     isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\02_parsec_enqueue.sql
     isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\03_parsec_queue_triggers.sql
+    isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\08_parsec_queue_events.sql
 
-  Обновление базы, где уже выполнены скрипты 01..03 версии 4.0.0:
+  Скрипт 08 создаёт триггер PARSEC_QUEUE_EVENTS с POST_EVENT 'PARSEC_QUEUE_CHANGED'.
+  По нему мониторы очереди (ParsecQueueViewerWpf.exe и ParsecQueueViewerWin32.exe)
+  обновляют окно сразу после изменения таблицы, без опроса. Служба от 08 не
+  зависит, но без него монитор обновляется только резервным таймером и
+  предупреждает об этом.
+
+  Для WPF-монитора ничего доустанавливать не нужно: ParsecQueueViewerWpf.exe
+  автономен (≈72 МБ, .NET 8 и WPF внутри). Win32-монитор компактнее (≈1,6 МБ)
+  и работает на встроенном .NET Framework 4.8.
+
+  Обновление базы, где уже выполнены скрипты 01..03 прежних версий:
 
     isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\06_parsec_queue_card_11.sql
+    isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\07_parsec_queue_ssaccess_ad_people_check.sql
+
+  Для монитора очереди дополнительно (можно и на новой базе):
+
+    isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\08_parsec_queue_events.sql
 
   Дополнительные скрипты (по необходимости):
 
@@ -45,6 +61,10 @@
                                          иначе backfill создаст дубли.
     db\05_retention.sql                — очистка завершённых событий старше 12 месяцев.
                                          Запускать по расписанию, не из службы.
+    db\08_parsec_queue_events.sql      — событие Firebird для мониторов очереди
+                                         ParsecQueueViewerWpf.exe и
+                                         ParsecQueueViewerWin32.exe (обновление окна
+                                         без опроса). Для службы не нужен.
     db\99_drop_parsec_queue.sql        — удаляет всё созданное, вместе с историей.
                                          Только для тестовой базы!
 

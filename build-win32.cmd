@@ -7,8 +7,8 @@ cd /d "%~dp0"
 
 set "PROJ=.\ParsecQueueViewer.Win32\ParsecQueueViewer.Win32.csproj"
 set "OUT=.\ParsecQueueViewer.Win32\bin\Release\net48"
-set "PORTABLE=.\Output\ParsecQueueViewerWin32_v1.0.0_single"
-set "ZIP=.\Output\ParsecQueueViewerWin32_v1.0.0_single.zip"
+set "PORTABLE=.\Output\ParsecQueueViewerWin32_v1.1.0_single"
+set "ZIP=.\Output\ParsecQueueViewerWin32_v1.1.0_single.zip"
 
 echo ========================================
 echo    Parsec Queue Viewer Win32 - single exe

@@ -48,6 +48,7 @@ namespace ParsecQueueViewer.Win32
         public int TotalCount;
         public bool ActiveRowsTruncated;
         public bool HistoryTruncated;
+        public bool EventTriggerPresent = true;
         public DateTime LoadedAt = DateTime.Now;
     }
 

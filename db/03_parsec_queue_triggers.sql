@@ -162,7 +162,7 @@ begin
     do
       execute procedure parsec_enqueue(
         7, new.id_pep, cast(:v_accessname as varchar(50)),
-        'ACC:7:' || cast(new.id_pep as varchar(20)) || ':' || cast(:v_accessname as varchar(20)),
+        'ACC:7:' || cast(new.id_pep as varchar(20)) || ':' || cast(new.id_card as varchar(20)),
         'SS_ACCESSUSER');
   end
 end^

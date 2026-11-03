@@ -117,6 +117,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" MinHeight="210" />
             <RowDefinition Height="6" />
             <RowDefinition Height="280" MinHeight="180" MaxHeight="420" />
@@ -172,12 +173,15 @@
                         <Border CornerRadius="99"
                                 Padding="10,6"
                                 Margin="0,0,10,0"
-                                ToolTip="{Binding ConnectionTooltip}">
+                                ToolTip="{Binding EventsModeTooltip}">
                             <Border.Style>
                                 <Style TargetType="Border">
                                     <Setter Property="Background" Value="#F1F5F9" />
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                            <Setter Property="Background" Value="#FEF3C7" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsEventsOnline}" Value="True">
                                             <Setter Property="Background" Value="#DCFCE7" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding HasConnectionError}" Value="True">
@@ -196,6 +200,9 @@
                                             <Setter Property="Fill" Value="#94A3B8" />
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                                    <Setter Property="Fill" Value="#D97706" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsEventsOnline}" Value="True">
                                                     <Setter Property="Fill" Value="#16A34A" />
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding HasConnectionError}" Value="True">
@@ -217,6 +224,9 @@
                                             <Setter Property="Foreground" Value="#475569" />
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                                    <Setter Property="Foreground" Value="#B45309" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsEventsOnline}" Value="True">
                                                     <Setter Property="Foreground" Value="#15803D" />
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding HasConnectionError}" Value="True">
@@ -347,8 +357,51 @@
             </Grid>
         </Border>
 
+        <!-- Событие Firebird недоступно: нет триггера, нет связи или нет прав -->
+        <Border Grid.Row="3"
+                Margin="22,10,22,0"
+                Background="#FFFBEB"
+                BorderBrush="#FDE68A"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="14,9"
+                Visibility="{Binding HasEventsWarning, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Width="24" Height="24" CornerRadius="12" Background="#FCD34D" Margin="0,0,10,0">
+                    <TextBlock Text="!"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="#78350F"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="Обновление по событию Firebird не работает"
+                               FontWeight="SemiBold"
+                               FontSize="12.5"
+                               Foreground="#78350F" />
+                    <TextBlock Text="{Binding EventsWarningText}"
+                               FontSize="11.5"
+                               Foreground="#92400E"
+                               TextWrapping="Wrap"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <Button Grid.Column="2"
+                        Content="Обновить"
+                        Style="{StaticResource SecondaryButton}"
+                        Command="{Binding RefreshCommand}"
+                        Margin="14,0,0,0"
+                        VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
         <!-- Сводка -->
-        <UniformGrid Grid.Row="3" Columns="5" Margin="22,16,22,0">
+        <UniformGrid Grid.Row="4" Columns="5" Margin="22,16,22,0">
             <Border Style="{StaticResource CardStyle}" Padding="15,12" Margin="0,0,10,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -434,7 +487,7 @@
         </UniformGrid>
 
         <!-- Фильтры и поиск -->
-        <Grid Grid.Row="4" Margin="22,16,22,8">
+        <Grid Grid.Row="5" Margin="22,16,22,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -502,7 +555,7 @@
         </Grid>
 
         <!-- Таблица очереди -->
-        <Border Grid.Row="5"
+        <Border Grid.Row="6"
                 Margin="22,0,22,0"
                 Style="{StaticResource CardStyle}"
                 ClipToBounds="True">
@@ -645,7 +698,7 @@
                                    FontWeight="SemiBold"
                                    Foreground="#536174"
                                    HorizontalAlignment="Center" />
-                        <TextBlock Text="Данные обновляются автоматически; F5 — обновить сейчас"
+                        <TextBlock Text="Данные обновляются по событию Firebird; F5 — обновить сейчас"
                                    FontSize="11.5"
                                    Foreground="#8A96A8"
                                    Margin="0,5,0,0"
@@ -655,7 +708,7 @@
             </Grid>
         </Border>
 
-        <GridSplitter Grid.Row="6"
+        <GridSplitter Grid.Row="7"
                       Height="6"
                       HorizontalAlignment="Stretch"
                       VerticalAlignment="Center"
@@ -665,7 +718,7 @@
                       ShowsPreview="True" />
 
         <!-- Детали выбранного события -->
-        <Border Grid.Row="7"
+        <Border Grid.Row="8"
                 Margin="22,0,22,0"
                 Style="{StaticResource CardStyle}"
                 ClipToBounds="True">
@@ -912,7 +965,7 @@
         </Border>
 
         <!-- Нижняя строка -->
-        <Border Grid.Row="8"
+        <Border Grid.Row="9"
                 Background="White"
                 BorderBrush="{StaticResource BorderBrush}"
                 BorderThickness="0,1,0,0"
@@ -975,15 +1028,17 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <CheckBox Content="Автообновление"
+                    <CheckBox Content="Резервный опрос"
                               IsChecked="{Binding AutoRefresh}"
                               Style="{StaticResource CheckBoxStyle}"
+                              ToolTip="Обновлять очередь по таймеру, если событие Firebird недоступно"
                               VerticalAlignment="Center" />
                     <ComboBox ItemsSource="{Binding RefreshIntervals}"
                               SelectedItem="{Binding RefreshSeconds}"
                               Style="{StaticResource ComboStyle}"
                               Width="60"
                               Margin="8,0,4,0"
+                              ToolTip="Интервал резервного опроса"
                               VerticalAlignment="Center" />
                     <TextBlock Text="с"
                                FontSize="11"

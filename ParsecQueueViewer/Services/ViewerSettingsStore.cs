@@ -47,7 +47,7 @@ namespace ParsecQueueViewer.Services
 
                 if (settings.RefreshSeconds < 5 || settings.RefreshSeconds > 3600)
                 {
-                    settings.RefreshSeconds = 10;
+                    settings.RefreshSeconds = 60;
                 }
 
                 if (settings.HistoryLimit < 100 || settings.HistoryLimit > 5000)

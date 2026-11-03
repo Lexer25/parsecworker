@@ -102,9 +102,13 @@ tools/regenerate-parsec-client.ps1   перегенерация SOAP-клиен�
   должны быть выполнены скрипты `db/01..03` (таблица `PARSEC_QUEUE`, процедура,
   триггеры); при обновлении с 4.0.0 — `db/06`. Без них служба пишет `Critical`
   и очередь не обрабатывает.
-- **Монитор очереди:** `ParsecQueueViewer.exe` из `publish\QueueViewer` — отдельное
-  desktop-приложение (WPF, self-contained). Оно читает тот же `appsettings.json`,
-  не меняет базу и может работать при запущенной службе.
+- **Монитор очереди:** `ParsecQueueViewerWpf.exe` из `publish\QueueViewer` — отдельное
+  desktop-приложение WPF одним автономным exe (≈72 МБ, .NET 8 и WPF внутри — на
+  машине пользователя ничего доустанавливать не нужно). Читает тот же
+  `appsettings.json`, не меняет базу и может работать при запущенной службе.
+  Обновляется по событию Firebird `PARSEC_QUEUE_CHANGED`
+  (`db/08_parsec_queue_events.sql`). Если размер важен, есть компактный
+  Win32-вариант из [ParsecQueueViewer.Win32](../ParsecQueueViewer.Win32/README.md).
 
 ## Сборка и запуск
 
@@ -163,7 +167,7 @@ dotnet publish .\ParsecIntegrationClient\ParsecIntegrationClient.csproj -c Relea
 - `publish\` — `ParsecIntegrationClient.exe` (≈38 МБ, все зависимости внутри),
   `appsettings.json`, `install-service.ps1`, `uninstall-service.ps1`, `README.md`, `*.pdb`;
 - `publish\db\` — SQL-скрипты `PARSEC_QUEUE` (копируются из `db\`);
-- `publish\QueueViewer\` — монитор очереди `ParsecQueueViewer.exe`
+- `publish\QueueViewer\` — монитор очереди `ParsecQueueViewerWpf.exe`
   (см. [ParsecQueueViewer/README.md](../ParsecQueueViewer/README.md));
 - `Output\ParsecIntegrationSetup_v4.1.0.0.exe` — установщик (Inno Setup 6, `ParsecSetup.iss`).
   В меню «Пуск» он добавляет ярлык «Очередь интегратора».

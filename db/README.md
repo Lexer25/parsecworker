@@ -22,6 +22,8 @@
 | `04_backfill_from_cardindev.sql` | разовый перенос незавершённых операций 3..10, 35, 55 из `CARDINDEV` |
 | `05_retention.sql` | удаление завершённых событий старше 12 месяцев |
 | `06_parsec_queue_card_11.sql` | обновление 4.0.0 → 4.1.0: пересоздание триггеров `CARD` (операция 11, смена `ID_CARDTYPE`) |
+| `07_parsec_queue_ssaccess_ad_people_check.sql` | обновление триггера `PARSEC_Q_SSACCESS_AD`: проверка `PEOPLE` перед постановкой операции 8 |
+| `08_parsec_queue_events.sql` | триггер `PARSEC_QUEUE_EVENTS`: `POST_EVENT 'PARSEC_QUEUE_CHANGED'` при любом изменении очереди — мгновенное обновление монитора (WPF `ParsecQueueViewerWpf.exe` и Win32 `ParsecQueueViewerWin32.exe`) без опроса |
 | `99_drop_parsec_queue.sql` | удалить всё созданное (уничтожает историю; только для тестовой базы) |
 
 Скрипты рассчитаны на **Firebird 1.5 (ODS 10.1), dialect 3, WIN1251**. Для более новых
@@ -36,7 +38,17 @@
 isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\01_parsec_queue_ddl.sql
 isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\02_parsec_enqueue.sql
 isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\03_parsec_queue_triggers.sql
+isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\08_parsec_queue_events.sql
 ```
+
+`08_parsec_queue_events.sql` нужен мониторам очереди (`ParsecQueueViewer` — WPF
+и `ParsecQueueViewer.Win32`): он публикует событие Firebird, по которому окно
+перечитывает `PARSEC_QUEUE`.
+Служба от этого скрипта не зависит и работает без него. Скрипт можно запускать
+повторно, как и `03`: он делает `drop trigger` + `create trigger`, поэтому на
+базе без триггера `isql` напечатает `Trigger not found` и завершится с кодом 1 —
+это ожидаемо. Останавливать службу не обязательно: между `drop` и `create`
+теряется только одно событие монитора, данные он доберёт резервным опросом.
 
 `03_parsec_queue_triggers.sql` перед каждым `create trigger` удаляет старый триггер,
 поэтому его можно запускать повторно, чтобы обновить все триггеры одним пакетом.
@@ -53,12 +65,25 @@ Firebird 1.5 не поддерживает `drop trigger if exists`: на баз
 ```sql
 select count(*) from parsec_queue;
 select rdb$trigger_name from rdb$triggers where rdb$trigger_name starting with 'PARSEC_Q_';
+select rdb$trigger_name from rdb$triggers where rdb$trigger_name = 'PARSEC_QUEUE_EVENTS';
 ```
 
 `04_backfill` нужен только если в `CARDINDEV` остались необработанные операции 3..10,
 35, 55. Операции 1/2 (индекс карт на устройствах) к Парсеку не относятся и не переносятся.
 Запускайте его **до** включения новых триггеров: после включения те же бизнес-события
 уже лежат в `PARSEC_QUEUE`, и backfill создаст дубликаты.
+
+### Обновление действующей базы
+
+На базе, где уже выполнены `01..03` (и, возможно, `06`/`07`), достаточно применить
+недостающие скрипты. Для обновления монитора очереди это `08`:
+
+```bat
+isql -user SYSDBA -password <пароль> localhost:D:\path\to\database.gdb -i db\08_parsec_queue_events.sql
+```
+
+Без него монитор работает по резервному таймеру и показывает жёлтое предупреждение
+о том, что события Firebird не настроены.
 
 ### Обновление 4.0.0 → 4.1.0
 
@@ -91,6 +116,41 @@ select rdb$trigger_name from rdb$triggers
 
 Вместо отдельного `06` можно повторно выполнить `03_parsec_queue_triggers.sql`: он
 пересоздаёт все триггеры, включая `PARSEC_Q_CARD_AU` и `PARSEC_Q_CARD_AD`.
+
+### События для монитора очереди (08)
+
+`08_parsec_queue_events.sql` создаёт на `PARSEC_QUEUE` один триггер:
+
+| Триггер | Событие | Когда |
+|---|---|---|
+| `PARSEC_QUEUE_EVENTS` | `PARSEC_QUEUE_CHANGED` | `AFTER INSERT OR UPDATE OR DELETE` любой строки |
+
+Триггер только выполняет `POST_EVENT 'PARSEC_QUEUE_CHANGED'` и ничего не пишет в
+таблицу, поэтому не влияет на работу службы и триггеров бизнес-таблиц. Firebird
+доставляет событие клиенту после `COMMIT`: монитор читает только зафиксированные
+данные, а несколько изменений в одной транзакции дают одно событие.
+
+Мониторы `ParsecQueueViewer` (WPF, 1.1.1+) и `ParsecQueueViewer.Win32` (1.1.0+)
+подписываются на это событие через `FbRemoteEvent` и перечитывают очередь без
+опроса. Имя события задано в двух местах и должно совпадать: `POST_EVENT` в `08`
+и `QueueEventWatcher.EventName` в коде монитора. Монитор проверяет наличие
+активного триггера запросом к `RDB$TRIGGERS`: если его нет, в окне появляется
+жёлтая плашка с просьбой применить `08`, а данные обновляет резервный таймер.
+
+Проверка и удаление:
+
+```sql
+-- триггер есть и активен
+select rdb$trigger_name, rdb$trigger_inactive
+  from rdb$triggers where rdb$trigger_name = 'PARSEC_QUEUE_EVENTS';
+
+-- удалить (монитор перейдёт на резервный опрос)
+drop trigger parsec_queue_events;
+```
+
+Права: событие публикуется триггером от имени владельца (обычно `SYSDBA`),
+поэтому монитору не нужны права на запись. Монитору нужно только подключение к
+базе и `SELECT` на очередь, как и раньше.
 
 ### Кодировка скриптов
 

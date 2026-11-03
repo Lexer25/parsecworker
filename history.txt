@@ -9,6 +9,101 @@
 Новые записи добавляются сверху.
 
 --------------------------------------------------------------------------------
+ParsecQueueViewer (WPF) 1.1.2 — 01.11.2026
+--------------------------------------------------------------------------------
+
+ParsecQueueViewerWpf.exe стал автономным одним файлом:
+  * сборка self-contained + single-file: .NET 8, WPF и провайдер Firebird
+    упакованы внутрь exe, на другом компьютере ничего доустанавливать не нужно;
+  * размер ≈72 МБ (≈68,7 МиБ) вместо 1,55 МБ framework-dependent — плата за
+    отсутствие зависимости от установленного .NET 8 Desktop Runtime;
+  * символы отладки встроены в exe (DebugType=embedded для Release), поэтому
+    в поставке не остаётся отдельного ParsecQueueViewerWpf.pdb;
+  * клиент Firebird (fbclient.dll) не нужен: провайдер 9.1.1 работает по
+    управляемому протоколу и подключается к серверу по TCP;
+  * native-части WPF хост распаковывает в %TEMP%\.net при старте; если временный
+    каталог закрыт для записи, задаётся DOTNET_BUNDLE_EXTRACT_BASE_DIR;
+  * новый скрипт build-wpf.cmd собирает один файл в
+    Output\ParsecQueueViewerWpf_v1.1.2_single\ParsecQueueViewerWpf.exe;
+  * framework-dependent вариант (≈1,55 МБ) остаётся доступен ключами
+    -p:SelfContained=false -p:IncludeNativeLibrariesForSelfExtract=false
+    -p:EnableCompressionInSingleFile=false;
+  * версия монитора 1.1.2.
+
+Затронутые файлы: ParsecQueueViewer/ParsecQueueViewer.csproj, README.md,
+build-wpf.cmd (новый), build.cmd, README.md (корень),
+ParsecIntegrationClient/README.md, ParsecQueueViewer.Win32/README.md,
+setup_readme.txt, history.txt.
+
+--------------------------------------------------------------------------------
+ParsecQueueViewer (WPF) 1.1.1 — 01.11.2026
+--------------------------------------------------------------------------------
+
+WPF-монитор обновляется по событию Firebird, как Win32-вариант, и получил
+собственное имя exe:
+  * Services/QueueEventWatcher.cs — слушатель FbRemoteEvent в отдельном потоке:
+    подписка на PARSEC_QUEUE_CHANGED, переподключение с паузой 2..30 секунд,
+    события Changed/StateChanged для модели представления;
+  * пачка изменений от службы сворачивается: MainViewModel ждёт 250 мс после
+    последнего события и перечитывает очередь один раз; источник обновления
+    (запуск, кнопка, F5, таймер, событие) виден в нижней строке;
+  * QueueRepository проверяет наличие активного триггера PARSEC_QUEUE_EVENTS;
+    если его нет, появляется жёлтая плашка с просьбой применить db/08, а данные
+    обновляет резервный опрос;
+  * статус в шапке: «Онлайн» — подписка активна и триггер есть, «Опрос» — работает
+    только резервный таймер, «Нет событий» — таймер выключен галочкой, подписки нет;
+  * «Автообновление» переименовано в «Резервный опрос», интервал по умолчанию
+    для новых установок — 60 секунд;
+  * результирующий файл теперь ParsecQueueViewerWpf.exe (было ParsecQueueViewer.exe):
+    имя отличает WPF-монитор от ParsecQueueViewerWin32.exe, чтобы обе версии можно
+    было держать в одной папке; обновлены build.cmd, ParsecSetup.iss и ярлык
+    «Очередь интегратора»;
+  * версия монитора 1.1.1, preview.png переснят с новым интерфейсом.
+
+Затронутые файлы: ParsecQueueViewer/Services/QueueEventWatcher.cs (новый),
+ParsecQueueViewer/ViewModels/MainViewModel.cs, Services/QueueRepository.cs,
+Models/QueueRow.cs, Models/ViewerSettings.cs, Services/ViewerSettingsStore.cs,
+MainWindow.xaml, ParsecQueueViewer.csproj, README.md, preview.png, build.cmd,
+ParsecSetup.iss, README.md (корень), ParsecIntegrationClient/README.md,
+db/README.md, setup_readme.txt, history.txt.
+
+--------------------------------------------------------------------------------
+ParsecQueueViewer 1.1.0 — 01.11.2026
+--------------------------------------------------------------------------------
+
+Монитор очереди Win32 (ParsecQueueViewer.Win32) обновляется по событию Firebird,
+а не по таймеру:
+  * db/08_parsec_queue_events.sql создаёт на PARSEC_QUEUE триггер
+    PARSEC_QUEUE_EVENTS: AFTER INSERT OR UPDATE OR DELETE -> POST_EVENT
+    'PARSEC_QUEUE_CHANGED';
+  * монитор держит отдельное подключение FbRemoteEvent (поток «PARSEC_QUEUE
+    events») и по событию перечитывает очередь — кнопка «Обновить» и таймер
+    больше не нужны для актуальности;
+  * пачка изменений от службы сворачивается: окно ждёт 250 мс после последнего
+    события и обновляется один раз;
+  * при обрыве связи слушатель переподключается с паузой 2..30 секунд, данные
+    продолжает обновлять резервный таймер;
+  * статус в шапке: «Онлайн» — подписка на событие активна, «Опрос» — работает
+    только резервный таймер, «Нет событий» — таймер выключен галочкой и подписки
+    нет; в подвале видно, чем вызвано последнее обновление (запуск, событие,
+    таймер, кнопка, F5);
+  * если триггера в базе нет, показывается жёлтая плашка с просьбой применить
+    db/08, а не «тихая» устаревшая таблица; такая же плашка объясняет недоступность
+    самих событий (нет связи, нет прав);
+  * «Автообновление» переименовано в «Резервный опрос», интервал по умолчанию
+    для новых установок — 60 секунд;
+  * версия монитора 1.1.0; build-win32.cmd собирает
+    Output\ParsecQueueViewerWin32_v1.1.0_single.zip;
+  * WPF-монитор теперь тоже один exe, но framework-dependent: ≈1,55 МБ,
+    native WPF берётся из установленного .NET 8 Desktop Runtime. Распаковки
+    в C:\temp больше нет — это исправляет ошибку bundle extraction (код 5).
+
+Затронутые файлы: ParsecQueueViewer.Win32/QueueEventWatcher.cs (новый),
+ParsecQueueViewer.Win32/MainWindow.cs, QueueRepository.cs, DataModels.cs,
+Native.cs, README.md, ParsecQueueViewer.Win32.csproj, build-win32.cmd,
+db/08_parsec_queue_events.sql (новый), db/README.md, setup_readme.txt, history.txt.
+
+--------------------------------------------------------------------------------
 ParsecQueueViewer 1.0.0 — 31.10.2026
 --------------------------------------------------------------------------------
 

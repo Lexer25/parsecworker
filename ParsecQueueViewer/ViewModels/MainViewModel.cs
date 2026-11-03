@@ -22,7 +22,9 @@ namespace ParsecQueueViewer.ViewModels
         private readonly QueueRepository _repository = new();
         private readonly ViewerSettings _settings;
         private readonly string _explicitConfigPath;
+        private readonly Dispatcher _dispatcher;
         private readonly DispatcherTimer _timer;
+        private readonly DispatcherTimer _eventTimer;
         private readonly SemaphoreSlim _refreshGate = new(1, 1);
 
         private IntegratorConfiguration _configuration;
@@ -64,9 +66,18 @@ namespace ParsecQueueViewer.ViewModels
         private string _visibleCountText = "0 из 0";
         private string _loadedCountText = "загружено 0";
 
+        private QueueEventWatcher _watcher;
+        private string _refreshSource = "запуск";
+        private string _lastRefreshSource = "запуск";
+        private string _eventsWarningText;
+        private bool _hasEventsWarning;
+        private bool _eventListenerConnected;
+        private bool _eventTriggerPresent = true;
+
         public MainViewModel(string explicitConfigPath)
         {
             _explicitConfigPath = explicitConfigPath;
+            _dispatcher = Dispatcher.CurrentDispatcher;
             _settingsStore = new ViewerSettingsStore();
             _settings = _settingsStore.Load();
 
@@ -96,8 +107,17 @@ namespace ParsecQueueViewer.ViewModels
             };
             _timer.Tick += OnTimerTick;
 
+            // Одно изменение таблицы часто порождает пачку событий (служба правит
+            // несколько строк подряд). Перечитываем очередь один раз через 250 мс
+            // после последнего события.
+            _eventTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            _eventTimer.Tick += OnEventTimerTick;
+
             RefreshCommand = new AsyncRelayCommand(
-                () => RefreshAsync(),
+                () => RefreshAsync("кнопка"),
                 () => _configuration != null && !_isBusy);
 
             ApplySort();
@@ -144,6 +164,8 @@ namespace ParsecQueueViewer.ViewModels
                 if (SetProperty(ref _autoRefresh, value))
                 {
                     RestartTimer();
+                    // От галочки зависит текст предупреждения и режим в шапке.
+                    UpdateEventsState();
                 }
             }
         }
@@ -153,7 +175,7 @@ namespace ParsecQueueViewer.ViewModels
             get => _refreshSeconds;
             set
             {
-                int normalized = value is >= 5 and <= 3600 ? value : 10;
+                int normalized = value is >= 5 and <= 3600 ? value : 60;
                 if (SetProperty(ref _refreshSeconds, normalized))
                 {
                     RestartTimer();
@@ -195,10 +217,33 @@ namespace ParsecQueueViewer.ViewModels
         public bool HasConnectionError => _hasConnectionError;
         public bool HasConfigurationError => _hasConfigurationError;
 
+        /// <summary>
+        /// Очередь обновляется по событию Firebird: подписка активна и триггер
+        /// PARSEC_QUEUE_EVENTS в базе есть.
+        /// </summary>
+        public bool IsEventsOnline =>
+            _isConnected && _eventListenerConnected && _eventTriggerPresent;
+
+        public bool HasEventsWarning => _hasEventsWarning;
+        public string EventsWarningText => _eventsWarningText;
+
         public string ConnectionStatusText =>
             _hasConfigurationError ? "Нет настроек" :
-            _isConnected ? "Подключено" :
-            _hasConnectionError ? "Ошибка" : "Ожидание";
+            _hasConnectionError ? "Ошибка" :
+            !_isConnected ? "Ожидание" :
+            IsEventsOnline ? "Онлайн" :
+            _autoRefresh ? "Опрос" : "Нет событий";
+
+        public string EventsModeTooltip =>
+            _hasConfigurationError ? "Параметры подключения не загружены" :
+            _hasConnectionError ? "Нет связи с базой" :
+            !_isConnected ? "Очередь ещё не прочитана" :
+            IsEventsOnline
+                ? "Подписка на событие Firebird " + QueueEventWatcher.EventName +
+                  " активна: очередь перечитывается сразу после изменения таблицы"
+                : _autoRefresh
+                    ? "Событие Firebird недоступно: очередь обновляется резервным опросом"
+                    : "Событие Firebird недоступно, а резервный опрос выключен — данные не обновляются";
 
         public string ConfigPath => _configPath;
         public string ConfigFileDisplay => _configFileDisplay;
@@ -239,7 +284,8 @@ namespace ParsecQueueViewer.ViewModels
                     return "ещё не обновлялось";
                 }
 
-                return "обновлено " + _lastUpdated.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                return "обновлено " + _lastUpdated.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture) +
+                       " · " + _lastRefreshSource;
             }
         }
 
@@ -299,6 +345,9 @@ namespace ParsecQueueViewer.ViewModels
 
             _refreshCts?.Cancel();
             _detailsCts?.Cancel();
+            StopEvents();
+            _eventTriggerPresent = true;
+            _eventListenerConnected = false;
 
             _configuration = loaded;
             _settings.ConfigPath = loaded.ConfigPath;
@@ -329,14 +378,24 @@ namespace ParsecQueueViewer.ViewModels
 
             ClearSnapshot();
             RefreshCommand.RaiseCanExecuteChanged();
-            await RefreshAsync();
+            StartEvents();
+            await RefreshAsync("запуск");
         }
 
-        public async Task RefreshAsync()
+        /// <summary>
+        /// Перечитать очередь. <paramref name="source"/> — что вызвало обновление
+        /// (запуск, кнопка, F5, таймер, событие); значение видно в нижней строке окна.
+        /// </summary>
+        public async Task RefreshAsync(string source = null)
         {
             await _refreshGate.WaitAsync();
             CancellationTokenSource cts = new();
             _refreshCts = cts;
+
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                _refreshSource = source;
+            }
 
             try
             {
@@ -373,7 +432,7 @@ namespace ParsecQueueViewer.ViewModels
                     OnPropertyChanged(nameof(IsConnected));
                     OnPropertyChanged(nameof(HasConnectionError));
                     OnPropertyChanged(nameof(ConnectionErrorText));
-                    OnPropertyChanged(nameof(ConnectionStatusText));
+                    UpdateEventsState();
                 }
             }
             finally
@@ -406,6 +465,7 @@ namespace ParsecQueueViewer.ViewModels
             _successCount = Count(snapshot, 2);
             _retryCount = Count(snapshot, 3);
             _deadCount = Count(snapshot, 4);
+            _eventTriggerPresent = snapshot.EventTriggerPresent;
 
             Filters.First(option => option.Kind == QueueFilterKind.Active).Count =
                 _pendingCount + _inWorkCount + _retryCount + _deadCount;
@@ -417,6 +477,7 @@ namespace ParsecQueueViewer.ViewModels
             Filters.First(option => option.Kind == QueueFilterKind.All).Count = _totalCount;
 
             _lastUpdated = snapshot.LoadedAt;
+            _lastRefreshSource = _refreshSource;
             _isConnected = true;
             _hasConnectionError = false;
             _connectionErrorText = null;
@@ -437,7 +498,7 @@ namespace ParsecQueueViewer.ViewModels
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(HasConnectionError));
             OnPropertyChanged(nameof(ConnectionErrorText));
-            OnPropertyChanged(nameof(ConnectionStatusText));
+            UpdateEventsState();
             OnPropertyChanged(nameof(LoadLimitText));
             OnPropertyChanged(nameof(HasLimitNote));
 
@@ -680,6 +741,7 @@ namespace ParsecQueueViewer.ViewModels
 
         private void ApplyConfigError(string message)
         {
+            StopEvents();
             _configuration = null;
             _isConnected = false;
             _hasConfigurationError = true;
@@ -690,6 +752,8 @@ namespace ParsecQueueViewer.ViewModels
             _configFileDisplay = "appsettings.json не выбран";
             _connectionDisplay = "Подключение не настроено";
             _headerSubtitle = "Очередь PARSEC_QUEUE · только чтение";
+            _eventTriggerPresent = true;
+            _eventListenerConnected = false;
 
             OnPropertyChanged(nameof(HasConfigurationError));
             OnPropertyChanged(nameof(ConfigurationErrorText));
@@ -702,7 +766,7 @@ namespace ParsecQueueViewer.ViewModels
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(HasConnectionError));
             OnPropertyChanged(nameof(ConnectionErrorText));
-            OnPropertyChanged(nameof(ConnectionStatusText));
+            UpdateEventsState();
             ClearSnapshot();
             RefreshCommand.RaiseCanExecuteChanged();
         }
@@ -720,7 +784,18 @@ namespace ParsecQueueViewer.ViewModels
                 return;
             }
 
-            _ = RefreshAsync();
+            _ = RefreshAsync("таймер");
+        }
+
+        private void OnEventTimerTick(object sender, EventArgs e)
+        {
+            _eventTimer.Stop();
+            if (_disposed || _configuration == null)
+            {
+                return;
+            }
+
+            _ = RefreshAsync("событие");
         }
 
         private void RestartTimer()
@@ -736,6 +811,198 @@ namespace ParsecQueueViewer.ViewModels
                 _timer.Interval = TimeSpan.FromSeconds(_refreshSeconds);
                 _timer.Start();
             }
+        }
+
+        /// <summary>
+        /// Подписка на событие Firebird PARSEC_QUEUE_CHANGED: пока она активна,
+        /// очередь перечитывается сразу после изменения таблицы. Резервный
+        /// таймер остаётся включённым — так данные не устаревают при обрыве связи.
+        /// </summary>
+        private void StartEvents()
+        {
+            StopEvents();
+
+            IntegratorConfiguration configuration = _configuration;
+            if (configuration == null)
+            {
+                return;
+            }
+
+            QueueEventWatcher watcher;
+            try
+            {
+                watcher = new QueueEventWatcher(configuration.ConnectionString);
+            }
+            catch (Exception ex)
+            {
+                _eventListenerConnected = false;
+                _eventTriggerPresent = true;
+                UpdateEventsState("Не удалось подписаться на события: " + Sanitize(ex.Message));
+                return;
+            }
+
+            watcher.Changed += OnQueueChanged;
+            watcher.StateChanged += OnEventStateChanged;
+            _watcher = watcher;
+
+            try
+            {
+                watcher.Start();
+            }
+            catch (Exception ex)
+            {
+                _watcher = null;
+                watcher.Changed -= OnQueueChanged;
+                watcher.StateChanged -= OnEventStateChanged;
+                watcher.Dispose();
+                _eventListenerConnected = false;
+                UpdateEventsState("Не удалось подписаться на события: " + Sanitize(ex.Message));
+                return;
+            }
+
+            UpdateEventsState();
+        }
+
+        private void StopEvents()
+        {
+            QueueEventWatcher watcher = _watcher;
+            _watcher = null;
+            if (watcher == null)
+            {
+                return;
+            }
+
+            watcher.Changed -= OnQueueChanged;
+            watcher.StateChanged -= OnEventStateChanged;
+            watcher.Dispose();
+
+            _eventListenerConnected = false;
+        }
+
+        /// <summary>
+        /// Событие приходит из фонового потока слушателя: переключаемся на поток
+        /// интерфейса и планируем одно перечитывание очереди.
+        /// </summary>
+        private void OnQueueChanged(object sender, EventArgs e)
+        {
+            Dispatcher dispatcher = _dispatcher;
+            if (dispatcher == null || dispatcher.HasShutdownStarted || _disposed)
+            {
+                return;
+            }
+
+            try
+            {
+                dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ScheduleEventRefresh));
+            }
+            catch
+            {
+                // Окно уже закрывается — обновлять нечего.
+            }
+        }
+
+        private void OnEventStateChanged(object sender, EventArgs e)
+        {
+            Dispatcher dispatcher = _dispatcher;
+            if (dispatcher == null || dispatcher.HasShutdownStarted || _disposed)
+            {
+                return;
+            }
+
+            try
+            {
+                dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => UpdateEventsState()));
+            }
+            catch
+            {
+            }
+        }
+
+        private void ScheduleEventRefresh()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _eventTimer.Stop();
+            _eventTimer.Start();
+        }
+
+        private void UpdateEventsState(string listenerError = null)
+        {
+            QueueEventWatcher watcher = _watcher;
+            _eventListenerConnected = watcher != null && watcher.Connected;
+            string error = listenerError ?? (watcher == null ? null : watcher.LastError);
+
+            UpdateEventsWarning(error);
+            UpdateHeaderSubtitle();
+
+            OnPropertyChanged(nameof(IsEventsOnline));
+            OnPropertyChanged(nameof(ConnectionStatusText));
+            OnPropertyChanged(nameof(EventsModeTooltip));
+        }
+
+        private void UpdateEventsWarning(string listenerError)
+        {
+            string fallback = _autoRefresh
+                ? "Данные обновляются по резервному таймеру."
+                : "Резервный опрос выключен — данные не обновляются.";
+
+            string warning = null;
+            if (_isConnected && !_hasConnectionError && !_hasConfigurationError)
+            {
+                if (!_eventTriggerPresent)
+                {
+                    warning = "События Firebird не настроены: в базе нет активного триггера " +
+                              "PARSEC_QUEUE_EVENTS. " + fallback +
+                              " Примените db/08_parsec_queue_events.sql.";
+                }
+                else if (!_eventListenerConnected && !string.IsNullOrWhiteSpace(listenerError))
+                {
+                    string message = Sanitize(listenerError);
+                    if (message.Length > 160)
+                    {
+                        message = message.Substring(0, 160) + "…";
+                    }
+
+                    warning = "События Firebird недоступны: " + message + ". " + fallback;
+                }
+            }
+
+            bool changed = !string.Equals(warning, _eventsWarningText, StringComparison.Ordinal);
+            _hasEventsWarning = warning != null;
+            _eventsWarningText = warning;
+
+            if (changed)
+            {
+                OnPropertyChanged(nameof(HasEventsWarning));
+                OnPropertyChanged(nameof(EventsWarningText));
+            }
+        }
+
+        private void UpdateHeaderSubtitle()
+        {
+            string subtitle;
+            if (_hasConfigurationError || string.IsNullOrWhiteSpace(_connectionDisplay) ||
+                string.Equals(_connectionDisplay, "Подключение не настроено", StringComparison.Ordinal))
+            {
+                subtitle = "Очередь PARSEC_QUEUE · только чтение";
+            }
+            else
+            {
+                subtitle = "Очередь PARSEC_QUEUE · " + _connectionDisplay +
+                           (_isConnected ? (IsEventsOnline ? " · события" : " · опрос по таймеру") : string.Empty) +
+                           " · только чтение";
+            }
+
+            if (string.Equals(subtitle, _headerSubtitle, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _headerSubtitle = subtitle;
+            OnPropertyChanged(nameof(HeaderSubtitle));
         }
 
         private void IsBusySet(bool value)
@@ -830,8 +1097,10 @@ namespace ParsecQueueViewer.ViewModels
 
             _disposed = true;
             _timer.Stop();
+            _eventTimer.Stop();
             _refreshCts?.Cancel();
             _detailsCts?.Cancel();
+            StopEvents();
 
             _settings.ConfigPath = _configuration?.ConfigPath ?? _settings.ConfigPath;
             _settings.AutoRefresh = _autoRefresh;

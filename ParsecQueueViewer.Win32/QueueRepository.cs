@@ -35,6 +35,7 @@ namespace ParsecQueueViewer.Win32
                 connection.Open();
 
                 Dictionary<int, int> counts = ReadStatusCounts(connection);
+                bool eventTriggerPresent = ReadEventTriggerPresence(connection);
                 Dictionary<long, QueueRow> active = ReadRows(
                     connection,
                     "select first " + (MaxActiveRows + 1) + " " + QueueColumns +
@@ -74,6 +75,7 @@ namespace ParsecQueueViewer.Win32
                     TotalCount = counts.Values.Sum(),
                     ActiveRowsTruncated = activeTruncated,
                     HistoryTruncated = historyTruncated,
+                    EventTriggerPresent = eventTriggerPresent,
                     LoadedAt = DateTime.Now
                 };
             }
@@ -137,6 +139,31 @@ namespace ParsecQueueViewer.Win32
             }
 
             return counts;
+        }
+
+        /// <summary>
+        /// Есть ли в базе активный триггер, публикующий событие об изменении
+        /// очереди. Если метаданные недоступны (нет прав на RDB$TRIGGERS),
+        /// считаем, что триггер есть: предупреждение не должно пугать зря.
+        /// </summary>
+        private static bool ReadEventTriggerPresence(FbConnection connection)
+        {
+            try
+            {
+                using (FbCommand command = new FbCommand(
+                           "select count(*) from rdb$triggers " +
+                           "where rdb$trigger_name = 'PARSEC_QUEUE_EVENTS' " +
+                           "and coalesce(rdb$trigger_inactive, 0) = 0", connection))
+                {
+                    command.CommandTimeout = CommandTimeoutSeconds;
+                    object value = command.ExecuteScalar();
+                    return Convert.ToInt32(value, CultureInfo.InvariantCulture) > 0;
+                }
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static Dictionary<long, QueueRow> ReadRows(FbConnection connection, string sql)

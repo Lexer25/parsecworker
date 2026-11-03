@@ -35,6 +35,7 @@ namespace ParsecQueueViewer.Win32
         private static readonly IntPtr TimerRefresh = new IntPtr(1);
         private static readonly IntPtr TimerSearch = new IntPtr(2);
         private static readonly IntPtr TimerScreenshot = new IntPtr(3);
+        private static readonly IntPtr TimerEvent = new IntPtr(4);
 
         private static readonly string[] FilterNames =
         {
@@ -132,6 +133,7 @@ namespace ParsecQueueViewer.Win32
         private QueueSnapshot _snapshot;
         private IntegratorConfig _config;
         private QueueRepository _repository;
+        private QueueEventWatcher _watcher;
         private QueueRow _selectedRow;
         private long? _selectedId;
         private long? _historyForId;
@@ -139,21 +141,25 @@ namespace ParsecQueueViewer.Win32
         private QueueFilterKind _filter = QueueFilterKind.Active;
         private string _searchText = string.Empty;
         private string _errorText;
+        private string _warningText;
         private bool _refreshing;
         private bool _refreshAgain;
         private bool _rebuilding;
         private bool _autoRefresh = true;
-        private int _intervalSeconds = 10;
+        private int _intervalSeconds = 60;
         private int _generation;
         private int _historyGeneration;
         private int _lastUpdatedTick;
         private DateTime? _lastUpdated;
+        private string _refreshSource = "запуск";
+        private string _lastRefreshSource = "запуск";
         private string _statusText = "Ожидание";
         private uint _statusBackColor = Native.Rgb(241, 245, 249);
         private uint _statusTextColor = Native.Rgb(71, 85, 105);
 
         private QueueSnapshot _pendingSnapshot;
         private string _pendingError;
+        private string _pendingSource;
         private int _pendingGeneration;
         private List<QueueLogEntry> _pendingHistory;
         private long _pendingHistoryId;
@@ -333,7 +339,7 @@ namespace ParsecQueueViewer.Win32
                 0, 0, 10, 10, IdList);
 
             _labelAuto = Create(0, "STATIC",
-                "Автообновление", Native.SS_LEFT | Native.SS_NOPREFIX, 0, 0, 10, 10, 0);
+                "Резервный опрос", Native.SS_LEFT | Native.SS_NOPREFIX, 0, 0, 10, 10, 0);
             _autoCheck = Create(0, "BUTTON", "",
                 Native.BS_AUTOCHECKBOX | Native.WS_TABSTOP, 0, 0, 10, 10, IdAuto);
             Native.SendMessage(_autoCheck, 0x00F1, new IntPtr(_autoRefresh ? 1 : 0), IntPtr.Zero);
@@ -360,7 +366,7 @@ namespace ParsecQueueViewer.Win32
             _footerUpdated = Create(0, "STATIC",
                 "ещё не обновлялось", Native.SS_LEFT | Native.SS_NOPREFIX, 0, 0, 10, 10, IdFooterUpdated);
             _footerVersion = Create(0, "STATIC",
-                "Win32 · v1.0.0", Native.SS_LEFT | Native.SS_NOPREFIX, 0, 0, 10, 10, IdFooterVersion);
+                "Win32 · v1.1.0", Native.SS_LEFT | Native.SS_NOPREFIX, 0, 0, 10, 10, IdFooterVersion);
 
             SetFont(_labelTitle, _fontTitle);
             SetFont(_labelSubtitle, _fontSubtitle);
@@ -515,6 +521,14 @@ namespace ParsecQueueViewer.Win32
                     ProcessHistoryDone();
                     return IntPtr.Zero;
 
+                case Native.WM_QUEUE_EVENT:
+                    ScheduleEventRefresh();
+                    return IntPtr.Zero;
+
+                case Native.WM_QUEUE_STATE:
+                    UpdateEventState();
+                    return IntPtr.Zero;
+
                 case Native.WM_CLOSE:
                     Native.DestroyWindow(hWnd);
                     return IntPtr.Zero;
@@ -523,6 +537,8 @@ namespace ParsecQueueViewer.Win32
                     Native.KillTimer(hWnd, TimerRefresh);
                     Native.KillTimer(hWnd, TimerSearch);
                     Native.KillTimer(hWnd, TimerScreenshot);
+                    Native.KillTimer(hWnd, TimerEvent);
+                    StopEvents();
                     _settings.AutoRefresh = _autoRefresh;
                     _settings.IntervalSeconds = _intervalSeconds;
                     _settings.ConfigPath = _config == null ? _settings.ConfigPath : _config.ConfigPath;
@@ -556,7 +572,7 @@ namespace ParsecQueueViewer.Win32
                 case IdRefresh:
                     if (code == Native.BN_CLICKED)
                     {
-                        StartRefresh();
+                        StartRefresh("кнопка");
                     }
                     break;
 
@@ -591,6 +607,7 @@ namespace ParsecQueueViewer.Win32
                         _autoRefresh = Native.SendMessage(_autoCheck, 0x00F0, IntPtr.Zero, IntPtr.Zero)
                             .ToInt64() != 0;
                         SetupRefreshTimer();
+                        UpdateEventState();
                     }
                     break;
 
@@ -698,7 +715,12 @@ namespace ParsecQueueViewer.Win32
         {
             if (timerId == TimerRefresh)
             {
-                StartRefresh();
+                StartRefresh("таймер");
+            }
+            else if (timerId == TimerEvent)
+            {
+                Native.KillTimer(_hwnd, TimerEvent);
+                StartRefresh("событие");
             }
             else if (timerId == TimerSearch)
             {
@@ -719,7 +741,7 @@ namespace ParsecQueueViewer.Win32
             int code = key.ToInt32();
             if (code == Native.VK_F5)
             {
-                StartRefresh();
+                StartRefresh("F5");
             }
             else if (code == Native.VK_F && (Native.GetKeyState(Native.VK_CONTROL) & 0x8000) != 0)
             {
@@ -753,6 +775,7 @@ namespace ParsecQueueViewer.Win32
             try
             {
                 IntegratorConfig loaded = IntegratorConfig.Load(path);
+                StopEvents();
                 _config = loaded;
                 _repository = new QueueRepository(loaded.ConnectionString);
                 _settings.ConfigPath = loaded.ConfigPath;
@@ -765,6 +788,7 @@ namespace ParsecQueueViewer.Win32
                 _historyForAttempts = -1;
                 _snapshot = null;
                 _errorText = null;
+                _warningText = null;
                 UpdateCounts();
                 ClearHistory();
                 RebuildRows();
@@ -774,7 +798,8 @@ namespace ParsecQueueViewer.Win32
                                               " · " + loaded.ConnectionDisplay);
                 Native.EnableWindow(_refreshButton, true);
                 SetupRefreshTimer();
-                StartRefresh();
+                StartEvents();
+                StartRefresh("запуск");
             }
             catch (Exception ex)
             {
@@ -784,9 +809,11 @@ namespace ParsecQueueViewer.Win32
 
         private void SetConfigError(string message)
         {
+            StopEvents();
             _config = null;
             _repository = null;
             _errorText = message;
+            _warningText = null;
             _allRows.Clear();
             _selectedId = null;
             _selectedRow = null;
@@ -883,11 +910,16 @@ namespace ParsecQueueViewer.Win32
             }
         }
 
-        private void StartRefresh()
+        private void StartRefresh(string source = null)
         {
             if (_repository == null)
             {
                 return;
+            }
+
+            if (source != null)
+            {
+                _refreshSource = source;
             }
 
             if (_refreshing)
@@ -903,6 +935,7 @@ namespace ParsecQueueViewer.Win32
             InvalidateStatus();
 
             int generation = _generation;
+            string refreshSource = _refreshSource;
             QueueRepository repository = _repository;
 
             Task.Run(() =>
@@ -922,6 +955,7 @@ namespace ParsecQueueViewer.Win32
                 {
                     _pendingSnapshot = snapshot;
                     _pendingError = error;
+                    _pendingSource = refreshSource;
                     _pendingGeneration = generation;
                 }
 
@@ -933,14 +967,17 @@ namespace ParsecQueueViewer.Win32
         {
             QueueSnapshot snapshot;
             string error;
+            string source;
             int generation;
             lock (_pendingLock)
             {
                 snapshot = _pendingSnapshot;
                 error = _pendingError;
+                source = _pendingSource;
                 generation = _pendingGeneration;
                 _pendingSnapshot = null;
                 _pendingError = null;
+                _pendingSource = null;
             }
 
             _refreshing = false;
@@ -962,6 +999,7 @@ namespace ParsecQueueViewer.Win32
                 }
                 else if (snapshot != null)
                 {
+                    _lastRefreshSource = source ?? _refreshSource;
                     ApplySnapshot(snapshot);
                 }
             }
@@ -982,7 +1020,7 @@ namespace ParsecQueueViewer.Win32
             _errorText = null;
             _lastUpdated = snapshot.LoadedAt;
             _lastUpdatedTick = Environment.TickCount;
-            SetStatus("Подключено", ColorGreenSoft, ColorGreen);
+            UpdateEventState();
             SetSubtitle();
             UpdateCounts();
             UpdateFooter();
@@ -1090,7 +1128,8 @@ namespace ParsecQueueViewer.Win32
             }
 
             SetWindowText(_footerUpdated, _lastUpdated.HasValue
-                ? "обновлено " + _lastUpdated.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture)
+                ? "обновлено " + _lastUpdated.Value.ToString("HH:mm:ss", CultureInfo.InvariantCulture) +
+                  " · " + _lastRefreshSource
                 : "ещё не обновлялось");
         }
 
@@ -1098,16 +1137,133 @@ namespace ParsecQueueViewer.Win32
         {
             string subtitle = _config == null
                 ? "PARSEC_QUEUE · только чтение"
-                : "PARSEC_QUEUE · " + _config.ConnectionDisplay + " · только чтение";
+                : "PARSEC_QUEUE · " + _config.ConnectionDisplay +
+                  (_snapshot == null ? string.Empty :
+                      _snapshot.EventTriggerPresent ? " · события" : " · опрос по таймеру") +
+                  " · только чтение";
             SetWindowText(_labelSubtitle, subtitle);
         }
 
         private void SetStatus(string text, uint background, uint foreground)
         {
+            if (string.Equals(_statusText, text, StringComparison.Ordinal) &&
+                _statusBackColor == background && _statusTextColor == foreground)
+            {
+                return;
+            }
+
             _statusText = text;
             _statusBackColor = background;
             _statusTextColor = foreground;
             InvalidateStatus();
+        }
+
+        /// <summary>
+        /// Обновляет индикатор связи: «Онлайн» — подписка на событие активна,
+        /// «Опрос» — события недоступны и данные обновляет резервный таймер.
+        /// </summary>
+        private void UpdateEventState()
+        {
+            UpdateWarning();
+            bool listener = _watcher != null && _watcher.Connected;
+            bool trigger = _snapshot == null || _snapshot.EventTriggerPresent;
+
+            if (_refreshing || _snapshot == null || !string.IsNullOrWhiteSpace(_errorText))
+            {
+                return;
+            }
+
+            if (listener && trigger)
+            {
+                SetStatus("Онлайн", ColorGreenSoft, ColorGreen);
+            }
+            else if (_autoRefresh)
+            {
+                SetStatus("Опрос", ColorAmberSoft, ColorAmber);
+            }
+            else
+            {
+                SetStatus("Нет событий", ColorRedSoft, ColorRed);
+            }
+        }
+
+        /// <summary>
+        /// Плашка-предупреждение: триггер события не установлен или само
+        /// событие недоступно. Ошибки чтения очереди показываются отдельно,
+        /// красной плашкой.
+        /// </summary>
+        private void UpdateWarning()
+        {
+            string warning = BuildWarning();
+            if (string.Equals(warning, _warningText, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _warningText = warning;
+            Layout();
+            InvalidateBanner();
+        }
+
+        private string BuildWarning()
+        {
+            string fallback = _autoRefresh
+                ? "Данные обновляются по резервному таймеру."
+                : "Резервный опрос выключен — данные не обновляются.";
+
+            if (_snapshot != null && !_snapshot.EventTriggerPresent)
+            {
+                return "События Firebird не настроены: в базе нет активного триггера " +
+                       "PARSEC_QUEUE_EVENTS. " + fallback +
+                       " Примените db/08_parsec_queue_events.sql.";
+            }
+
+            string error = _watcher == null ? null : _watcher.LastError;
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                string message = Sanitize(error);
+                if (message.Length > 160)
+                {
+                    message = message.Substring(0, 160) + "…";
+                }
+
+                return "События Firebird недоступны: " + message + ". " + fallback;
+            }
+
+            return null;
+        }
+
+        private void StartEvents()
+        {
+            StopEvents();
+            if (_repository == null || _config == null)
+            {
+                return;
+            }
+
+            _watcher = new QueueEventWatcher(_config.ConnectionString, _hwnd);
+            _watcher.Start();
+        }
+
+        private void StopEvents()
+        {
+            QueueEventWatcher watcher = _watcher;
+            _watcher = null;
+            if (watcher != null)
+            {
+                watcher.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Одно изменение таблицы может породить пачку событий (служба правит
+        /// несколько строк подряд). Перечитываем очередь один раз через 250 мс
+        /// после последнего события.
+        /// </summary>
+        private void ScheduleEventRefresh()
+        {
+            Native.KillTimer(_hwnd, TimerEvent);
+            Native.SetTimer(_hwnd, TimerEvent, 250, IntPtr.Zero);
         }
 
         private void RebuildRows()
@@ -1497,7 +1653,9 @@ namespace ParsecQueueViewer.Win32
 
             int margin = S(20);
             int headerH = S(74);
-            int bannerH = string.IsNullOrWhiteSpace(_errorText) ? 0 : S(46);
+            bool hasBanner = !string.IsNullOrWhiteSpace(_errorText) ||
+                             !string.IsNullOrWhiteSpace(_warningText);
+            int bannerH = hasBanner ? S(46) : 0;
             int summaryH = S(86);
             int filterH = S(32);
             int footerH = S(32);
@@ -1567,7 +1725,7 @@ namespace ParsecQueueViewer.Win32
             SetHistoryColumns(detailsRightW);
 
             // Footer
-            int autoW = S(220);
+            int autoW = S(240);
             int autoX = _clientWidth - margin - autoW;
             int footerTextW = Math.Max(S(200), autoX - margin - S(16));
             int configW = (footerTextW * 48) / 100;
@@ -1579,10 +1737,10 @@ namespace ParsecQueueViewer.Win32
             Native.MoveWindow(_footerUpdated, margin + configW + S(8) + countsW + S(8),
                 footerY + S(8), updatedW, S(18), true);
 
-            Native.MoveWindow(_labelAuto, autoX, footerY + S(8), S(98), S(18), true);
-            Native.MoveWindow(_autoCheck, autoX + S(100), footerY + S(8), S(18), S(18), true);
-            Native.MoveWindow(_intervalCombo, autoX + S(124), footerY + S(4), S(64), S(200), true);
-            Native.MoveWindow(_labelSeconds, autoX + S(192), footerY + S(8), S(14), S(18), true);
+            Native.MoveWindow(_labelAuto, autoX, footerY + S(8), S(112), S(18), true);
+            Native.MoveWindow(_autoCheck, autoX + S(114), footerY + S(8), S(18), S(18), true);
+            Native.MoveWindow(_intervalCombo, autoX + S(138), footerY + S(4), S(64), S(200), true);
+            Native.MoveWindow(_labelSeconds, autoX + S(206), footerY + S(8), S(14), S(18), true);
             Native.MoveWindow(_footerVersion, -S(100), -S(100), S(1), S(1), true);
 
             Native.InvalidateRect(_hwnd, IntPtr.Zero, true);
@@ -1765,14 +1923,20 @@ namespace ParsecQueueViewer.Win32
 
         private void DrawBanner(Native.DRAWITEMSTRUCT item)
         {
-            if (string.IsNullOrWhiteSpace(_errorText))
+            bool isError = !string.IsNullOrWhiteSpace(_errorText);
+            string text = isError ? _errorText : _warningText;
+            if (string.IsNullOrWhiteSpace(text))
             {
                 return;
             }
 
+            uint background = isError ? ColorRedSoft : ColorAmberSoft;
+            uint borderColor = isError ? Native.Rgb(254, 202, 202) : Native.Rgb(253, 230, 138);
+            uint textColor = isError ? ColorRed : ColorAmber;
+
             Native.RECT rect = item.rcItem;
-            IntPtr brush = Native.CreateSolidBrush(ColorRedSoft);
-            IntPtr pen = Native.CreatePen(0, 1, Native.Rgb(254, 202, 202));
+            IntPtr brush = Native.CreateSolidBrush(background);
+            IntPtr pen = Native.CreatePen(0, 1, borderColor);
             IntPtr oldBrush = Native.SelectObject(item.hDC, brush);
             IntPtr oldPen = Native.SelectObject(item.hDC, pen);
             Native.RoundRect(item.hDC, rect.Left, rect.Top, rect.Right, rect.Bottom, S(14), S(14));
@@ -1782,14 +1946,14 @@ namespace ParsecQueueViewer.Win32
             Native.DeleteObject(pen);
 
             Native.SetBkMode(item.hDC, Native.TRANSPARENT);
-            Native.SetTextColor(item.hDC, ColorRed);
+            Native.SetTextColor(item.hDC, textColor);
             IntPtr oldFont = Native.SelectObject(item.hDC, _fontSmall);
             Native.RECT textRect = rect;
             textRect.Left += S(14);
             textRect.Top += S(7);
             textRect.Right -= S(12);
             textRect.Bottom -= S(7);
-            Native.DrawText(item.hDC, _errorText, _errorText.Length, ref textRect,
+            Native.DrawText(item.hDC, text, text.Length, ref textRect,
                 Native.DT_LEFT | Native.DT_WORDBREAK | Native.DT_END_ELLIPSIS | Native.DT_NOPREFIX);
             Native.SelectObject(item.hDC, oldFont);
         }
@@ -1937,7 +2101,7 @@ namespace ParsecQueueViewer.Win32
 
             public string ConfigPath;
             public bool AutoRefresh = true;
-            public int IntervalSeconds = 10;
+            public int IntervalSeconds = 60;
 
             public void Load()
             {

@@ -65,6 +65,7 @@ namespace ParsecQueueViewer.Services
 
             Dictionary<int, int> counts = ReadStatusCounts(connection);
             int total = counts.Values.Sum();
+            bool eventTriggerPresent = ReadEventTriggerPresence(connection);
 
             // Активные события читаем отдельно и без ограничения «последние N»:
             // иначе старое необработанное событие могло бы потеряться среди тысяч
@@ -116,6 +117,7 @@ namespace ParsecQueueViewer.Services
                 TotalCount = total,
                 ActiveRowsTruncated = activeTruncated,
                 HistoryTruncated = historyTruncated,
+                EventTriggerPresent = eventTriggerPresent,
                 LoadedAt = DateTime.Now
             };
         }
@@ -139,6 +141,32 @@ namespace ParsecQueueViewer.Services
             }
 
             return counts;
+        }
+
+        /// <summary>
+        /// Есть ли в базе активный триггер, публикующий событие об изменении
+        /// очереди. Если метаданные недоступны (нет прав на RDB$TRIGGERS),
+        /// считаем, что триггер есть: предупреждение не должно пугать зря.
+        /// </summary>
+        private static bool ReadEventTriggerPresence(FbConnection connection)
+        {
+            try
+            {
+                using FbCommand command = new(
+                    "select count(*) from rdb$triggers " +
+                    "where rdb$trigger_name = 'PARSEC_QUEUE_EVENTS' " +
+                    "and coalesce(rdb$trigger_inactive, 0) = 0", connection)
+                {
+                    CommandTimeout = CommandTimeoutSeconds
+                };
+
+                object value = command.ExecuteScalar();
+                return Convert.ToInt32(value, CultureInfo.InvariantCulture) > 0;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static Dictionary<long, QueueRow> ReadRows(

@@ -47,6 +47,13 @@ namespace ParsecQueueViewer.Models
         public int TotalCount { get; init; }
         public bool ActiveRowsTruncated { get; init; }
         public bool HistoryTruncated { get; init; }
+
+        /// <summary>
+        /// В базе есть активный триггер PARSEC_QUEUE_EVENTS, публикующий событие
+        /// об изменении очереди. Если false — работает только резервный опрос.
+        /// </summary>
+        public bool EventTriggerPresent { get; init; } = true;
+
         public DateTime LoadedAt { get; init; } = DateTime.Now;
     }
 }

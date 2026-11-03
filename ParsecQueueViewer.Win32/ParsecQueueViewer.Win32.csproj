@@ -20,9 +20,9 @@
     <ApplicationIcon>..\ParsecQueueViewer\Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <Product>Parsec Queue Viewer Win32</Product>
     <AssemblyTitle>Очередь интегратора PARSEC (Win32)</AssemblyTitle>
     <Description>Мониторинг PARSEC_QUEUE через Win32 API и Firebird.</Description>
